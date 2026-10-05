@@ -1,0 +1,57 @@
+{
+  "typography": {
+    "font_family": "Plus Jakarta Sans, Inter, sans-serif",
+    "headings": "text-2xl sm:text-3xl lg:text-4xl font-extrabold tracking-tight text-slate-900",
+    "body": "text-sm sm:text-base text-slate-700 font-normal leading-relaxed",
+    "labels": "text-xs font-semibold uppercase tracking-wider text-slate-500"
+  },
+  "colors": {
+    "archetype": "ORGANIC & EARTHY / FINTECH PROFESSIONAL",
+    "primary": "#0F172A",
+    "primary_hover": "#1E293B",
+    "accent": "#0D9488",
+    "background": "#F8FAFC",
+    "card_bg": "#FFFFFF",
+    "border": "#E2E8F0",
+    "text_main": "#0F172A",
+    "text_muted": "#64748B",
+    "success": "#10B981",
+    "warning": "#F59E0B",
+    "danger": "#EF4444"
+  },
+  "visual_enhancers": {
+    "card_style": "flat rectangular with 1px subtle border, rounded-xl, shadow-sm bg-white p-6",
+    "surface": "solid background with subtle frosted glass header backdrop-blur-md bg-white/90 border-b border-slate-200",
+    "transitions": "transition-colors transition-transform duration-200"
+  },
+  "grids": {
+    "dashboard_grid": "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6",
+    "form_grid": "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
+  },
+  "motion": {
+    "hover": "hover:-translate-y-0.5 transition-transform duration-150",
+    "click": "active:scale-95 transition-transform duration-100"
+  },
+  "accessibility": {
+    "contrast_ratio": "minimum 4.5:1 for text, 3:1 for UI elements",
+    "focus_states": "focus:ring-2 focus:ring-teal-500 focus:outline-none",
+    "test_attributes": "all interactive elements have data-testid attributes"
+  },
+  "instructions_to_main_agent": [
+    "Build a robust React fullstack application for Small Business Income, Expenses, Invoices, Inventory, Expenses (3 tabs), and Todos with per-user activity audit logs.",
+    "Support two accounts: admin (Kullanıcı 1) and user2 (Kullanıcı 2) with demo quick login buttons.",
+    "Invoices: Automatically compute 20% VAT-inclusive breakdown and monthly VAT totals. Support Excel/PDF upload simulation with preview and confirmation dialog.",
+    "Inventory: Automatically compute remaining quantity = needed - received (or initial stock tracker).",
+    "Expenses: Three distinct tabs (Şirket Harcamaları, Kullanıcı 1 Harcamaları, Kullanıcı 2 Harcamaları) with automatic totals.",
+    "Gelirler, Giderler, Faturalar: Auto-date on creation, dynamic table lists with add, edit, delete, and automatic bottom totals.",
+    "Todos: Task name, notes, completion timestamp toggle, delete.",
+    "Activity Log: Real-time user action tracking with date, time, user name, and action description.",
+    "Ensure all buttons, inputs, tables, and tabs have proper data-testid attributes."
+  ],
+  "universal_guidelines": [
+    "Never use full transparent headers without blur or scrim",
+    "Use generous spacing (p-6, p-8 for cards)",
+    "Always set explicit text color on hover",
+    "Include data-testid on all interactive elements"
+  ]
+}

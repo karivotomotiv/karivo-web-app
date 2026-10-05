@@ -1,0 +1,35 @@
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { AuthProvider } from "@/contexts/AuthContext";
+import Layout from "@/components/layout/Layout";
+import Login from "@/pages/Login";
+import Dashboard from "@/pages/Dashboard";
+import Gelirler from "@/pages/Gelirler";
+import Giderler from "@/pages/Giderler";
+import Faturalar from "@/pages/Faturalar";
+import Stok from "@/pages/Stok";
+import Harcamalar from "@/pages/Harcamalar";
+import Yapilacaklar from "@/pages/Yapilacaklar";
+import ActivityLog from "@/pages/ActivityLog";
+import "@/App.css";
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/" element={<Layout />}>
+            <Route index element={<Dashboard />} />
+            <Route path="gelirler" element={<Gelirler />} />
+            <Route path="giderler" element={<Giderler />} />
+            <Route path="faturalar" element={<Faturalar />} />
+            <Route path="stok" element={<Stok />} />
+            <Route path="harcamalar" element={<Harcamalar />} />
+            <Route path="yapilacaklar" element={<Yapilacaklar />} />
+            <Route path="islem-gunlugu" element={<ActivityLog />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
+  );
+}
