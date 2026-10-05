@@ -11,9 +11,14 @@ import os
 import io
 import re
 import uuid
+import ipaddress
 import logging
 import jwt
 import bcrypt
+import httpx
+from html import escape
+from html.parser import HTMLParser
+from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal
 
@@ -660,6 +665,353 @@ async def delete_todo(item_id: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 # ---- Activity Log ----
+# -----------------------------
+# Email (Resend via Emergent proxy) + Guardrails
+# -----------------------------
+EMAIL_BASE_URL = "https://integrations.emergentagent.com"
+EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY")
+EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "Şirket Yönetim")
+
+_SHORTENERS = ("bit.ly", "tinyurl.com", "t.co", "is.gd", "cutt.ly", "goo.gl", "rebrand.ly")
+_CRED_ASK = (
+    "reply with your password", "reply with the code", "send your password", "cvv",
+    "send us your password", "enter your password below", "confirm your card number",
+    "your full card number", "seed phrase", "recovery phrase", "verify your card",
+    "social security number", "confirm your bank details",
+)
+_HOSTISH = re.compile(r"\b(?:https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})", re.I)
+
+
+def _host_ok(host: str) -> bool:
+    if not host or "xn--" in host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    return not any(host == s or host.endswith("." + s) for s in _SHORTENERS)
+
+
+def _same_site(shown: str, real: str) -> bool:
+    return shown == real or real.endswith("." + shown) or shown.endswith("." + real)
+
+
+class _EmailScan(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.tags, self.urls, self.anchors = set(), [], []
+        self._href, self._text = None, []
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.add(tag.lower())
+        self.urls += [v for k, v in attrs if k.lower() in ("href", "src") and v]
+        if tag.lower() == "a":
+            self._href = dict((k.lower(), v) for k, v in attrs).get("href")
+            self._text = []
+
+    def handle_data(self, data):
+        if self._href is not None:
+            self._text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag.lower() == "a" and self._href is not None:
+            self.anchors.append((self._href, "".join(self._text)))
+            self._href, self._text = None, []
+
+
+def _assert_safe_email(subject: str, html: str) -> None:
+    scan = _EmailScan()
+    scan.feed(html)
+    if scan.tags & {"form", "input", "textarea", "select"}:
+        raise ValueError("No forms or input fields in email (G2)")
+    body = f"{subject}\n{html}".lower()
+    for p in _CRED_ASK:
+        if p in body:
+            raise ValueError(f"Email asks for credentials: {p!r} (G2)")
+    for url in scan.urls:
+        low = url.strip().lower()
+        if low.startswith(("mailto:", "tel:", "cid:", "#")):
+            continue
+        if not low.startswith("https://"):
+            raise ValueError(f"Email links/assets must be absolute https: {url!r} (G3)")
+        host = urlparse(low).hostname or ""
+        if not _host_ok(host) or urlparse(low).username is not None:
+            raise ValueError(f"Unsafe URL: {url!r} (G3)")
+    for href, text in scan.anchors:
+        real = urlparse(href.strip().lower()).hostname or ""
+        if not real:
+            continue
+        for m in _HOSTISH.finditer(text):
+            if not _same_site(m.group(1).lower(), real):
+                raise ValueError(f"Anchor host mismatch (G3)")
+
+
+async def send_email(*, to: str, subject: str, html: str) -> Optional[str]:
+    if not EMAIL_KEY:
+        raise HTTPException(status_code=500, detail="E-posta anahtarı yapılandırılmamış")
+    _assert_safe_email(subject, html)
+    payload = {"to": [to], "subject": subject, "html": html, "from_name": EMAIL_FROM_NAME}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{EMAIL_BASE_URL}/api/v1/email/send",
+                headers={"X-Email-Key": EMAIL_KEY},
+                json=payload,
+            )
+        resp.raise_for_status()
+        return resp.json().get("id")
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Email send failed: {e.response.status_code} {e.response.text}")
+        raise HTTPException(status_code=502, detail="E-posta gönderilemedi")
+    except Exception as e:
+        logger.error(f"Email send error: {e}")
+        raise HTTPException(status_code=500, detail="E-posta gönderme hatası")
+
+
+def _render_low_stock_email(user_name: str, items: list) -> str:
+    rows = "".join(
+        f'<tr><td style="padding:8px;border-bottom:1px solid #e2e8f0">{escape(str(it["product_name"]))}</td>'
+        f'<td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:right">{it["required_qty"]}</td>'
+        f'<td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:right">{it["received_qty"]}</td>'
+        f'<td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:right;color:#be123c;font-weight:600">{it["remaining_qty"]}</td></tr>'
+        for it in items
+    )
+    return (
+        f'<table role="presentation" width="100%" style="background:#f8fafc;padding:24px">'
+        f'<tr><td align="center"><table role="presentation" width="600" style="background:#ffffff;border-radius:12px;padding:28px;font-family:Arial,sans-serif;color:#0f172a">'
+        f'<tr><td><h2 style="margin:0 0 8px 0;color:#0f172a">Düşük Stok Uyarısı</h2>'
+        f'<p style="color:#475569;margin:0 0 16px 0">Merhaba {escape(user_name)}, aşağıdaki ürünlerde eksik stok tespit edildi.</p>'
+        f'<table role="presentation" width="100%" style="border-collapse:collapse;margin-top:12px">'
+        f'<thead><tr style="background:#f1f5f9"><th align="left" style="padding:8px">Ürün</th><th align="right" style="padding:8px">İhtiyaç</th><th align="right" style="padding:8px">Alınan</th><th align="right" style="padding:8px">Kalan</th></tr></thead>'
+        f'<tbody>{rows}</tbody></table>'
+        f'<p style="color:#64748b;font-size:12px;margin-top:24px">Bu e-posta {escape(EMAIL_FROM_NAME)} tarafından otomatik gönderilmiştir. Hesap güvenliği için şifre, kart ya da OTP bilgilerinizi asla e-posta ile paylaşmayız.</p>'
+        f'</td></tr></table></td></tr></table>'
+    )
+
+
+@api_router.get("/inventory/alerts")
+async def inventory_alerts(user: dict = Depends(get_current_user)):
+    """Kalan miktarı > 0 olan (eksik) ürünler."""
+    all_items = await db.inventory.find({}, {"_id": 0}).to_list(5000)
+    low = [i for i in all_items if float(i.get("remaining_qty", 0)) > 0]
+    low.sort(key=lambda x: float(x.get("remaining_qty", 0)), reverse=True)
+    return {"count": len(low), "items": low}
+
+
+@api_router.post("/inventory/send-low-stock-email")
+async def send_low_stock_email(user: dict = Depends(get_current_user)):
+    """Düşük stok uyarısını iki kullanıcıya da e-posta ile gönderir."""
+    all_items = await db.inventory.find({}, {"_id": 0}).to_list(5000)
+    low = [i for i in all_items if float(i.get("remaining_qty", 0)) > 0]
+    if not low:
+        raise HTTPException(400, "Düşük stok bulunmuyor")
+
+    # Alıcıları server-side records'tan al (G4 - caller recipient supply yok)
+    recipients = await db.users.find({}, {"_id": 0, "email": 1, "name": 1}).to_list(10)
+    if not recipients:
+        raise HTTPException(500, "Alıcı bulunamadı")
+
+    subject = f"Düşük Stok Uyarısı — {len(low)} ürün"
+    sent = []
+    failed = []
+    for r in recipients:
+        try:
+            html = _render_low_stock_email(r.get("name", ""), low)
+            email_id = await send_email(to=r["email"], subject=subject, html=html)
+            sent.append({"email": r["email"], "id": email_id})
+        except HTTPException as e:
+            failed.append({"email": r["email"], "error": str(e.detail)})
+        except Exception as e:
+            failed.append({"email": r["email"], "error": str(e)})
+
+    await log_activity(user, "email", "Stok", f"Düşük stok uyarısı gönderildi: {len(sent)} başarılı, {len(failed)} başarısız")
+    return {"sent": sent, "failed": failed, "low_stock_count": len(low)}
+
+
+# -----------------------------
+# Monthly trend (dashboard chart)
+# -----------------------------
+@api_router.get("/dashboard/monthly-trend")
+async def monthly_trend(user: dict = Depends(get_current_user)):
+    """Son 12 ayın gelir/gider/fatura/kdv/kâr özetini döner."""
+    def _month(d: str) -> str:
+        return (d or "")[:7]
+
+    incomes = await db.incomes.find({}, {"_id": 0, "date": 1, "amount": 1}).to_list(10000)
+    expenses = await db.expenses.find({}, {"_id": 0, "date": 1, "amount": 1}).to_list(10000)
+    invoices = await db.invoices.find({}, {"_id": 0, "date": 1, "amount": 1, "vat_amount": 1}).to_list(10000)
+
+    buckets: dict = {}
+    for row in incomes:
+        m = _month(row.get("date"))
+        if m:
+            buckets.setdefault(m, {"month": m, "income": 0, "expense": 0, "invoice": 0, "vat": 0})["income"] += float(row.get("amount", 0))
+    for row in expenses:
+        m = _month(row.get("date"))
+        if m:
+            buckets.setdefault(m, {"month": m, "income": 0, "expense": 0, "invoice": 0, "vat": 0})["expense"] += float(row.get("amount", 0))
+    for row in invoices:
+        m = _month(row.get("date"))
+        if m:
+            b = buckets.setdefault(m, {"month": m, "income": 0, "expense": 0, "invoice": 0, "vat": 0})
+            b["invoice"] += float(row.get("amount", 0))
+            b["vat"] += float(row.get("vat_amount", 0))
+
+    rows = []
+    for m in sorted(buckets.keys()):
+        b = buckets[m]
+        rows.append({
+            "month": m,
+            "income": round(b["income"], 2),
+            "expense": round(b["expense"], 2),
+            "invoice": round(b["invoice"], 2),
+            "vat": round(b["vat"], 2),
+            "profit": round(b["income"] - b["expense"], 2),
+        })
+    return rows[-12:]  # son 12 ay
+
+
+# -----------------------------
+# Invoice import preview + confirm (replaces single-shot import for UI)
+# -----------------------------
+class ParsedInvoiceRow(BaseModel):
+    description: str
+    amount: float
+    date: str
+
+
+class ImportConfirmIn(BaseModel):
+    items: List[ParsedInvoiceRow]
+
+
+async def _parse_invoice_file(raw: bytes, filename: str) -> List[dict]:
+    filename = (filename or "").lower()
+    parsed: List[dict] = []
+    if filename.endswith(".xlsx") or filename.endswith(".xlsm"):
+        from openpyxl import load_workbook
+        wb = load_workbook(io.BytesIO(raw), data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            raise HTTPException(400, "Excel dosyası boş")
+        headers = [str(c or "").strip().lower() for c in rows[0]]
+
+        def _find(cands):
+            for cand in cands:
+                for i, h in enumerate(headers):
+                    if cand in h:
+                        return i
+            return -1
+
+        idx_date = _find(["tarih", "date"])
+        idx_desc = _find(["aciklama", "açıklama", "description", "fatura"])
+        idx_amt = _find(["tutar", "amount", "toplam"])
+        if idx_amt == -1:
+            raise HTTPException(400, "Excel başlıklarında 'Tutar' bulunamadı")
+
+        for r in rows[1:]:
+            if r is None:
+                continue
+            try:
+                amt_raw = r[idx_amt]
+                if amt_raw in (None, ""):
+                    continue
+                amount = float(str(amt_raw).replace(",", ".").replace(" ", ""))
+                desc = str(r[idx_desc]).strip() if idx_desc != -1 and r[idx_desc] is not None else "Fatura"
+                date_val = r[idx_date] if idx_date != -1 else None
+                if hasattr(date_val, "strftime"):
+                    date = date_val.strftime("%Y-%m-%d")
+                elif date_val:
+                    date = _normalize_date_str(str(date_val))
+                else:
+                    date = _resolve_date(None)
+                parsed.append({"description": desc, "amount": amount, "date": date})
+            except Exception as e:
+                logger.warning(f"Satır atlandı: {e}")
+                continue
+
+    elif filename.endswith(".pdf"):
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(raw)) as pdf:
+            text_all = "\n".join((p.extract_text() or "") for p in pdf.pages)
+        for line in text_all.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            amt_match = re.findall(r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?|\d+[.,]\d{1,2}|\d+)", line)
+            if not amt_match:
+                continue
+            try:
+                last = amt_match[-1]
+                amount = float(last.replace(".", "").replace(",", ".")) if "," in last else float(last.replace(",", ""))
+            except Exception:
+                continue
+            date_m = re.search(r"(\d{4}-\d{2}-\d{2}|\d{2}[./-]\d{2}[./-]\d{4})", line)
+            date = _normalize_date_str(date_m.group(1)) if date_m else _resolve_date(None)
+            desc = line
+            if date_m:
+                desc = desc.replace(date_m.group(1), "")
+            desc = desc.replace(amt_match[-1], "").strip(" -|:")
+            if not desc:
+                desc = "Fatura"
+            if amount <= 0 or amount > 100_000_000:
+                continue
+            parsed.append({"description": desc[:200], "amount": amount, "date": date})
+    else:
+        raise HTTPException(400, "Yalnızca .xlsx veya .pdf dosyaları desteklenir")
+    return parsed
+
+
+@api_router.post("/invoices/import-preview")
+async def import_invoices_preview(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Dosyayı ayrıştırır, kaydetmeden parsed satırları döner (önizleme)."""
+    raw = await file.read()
+    try:
+        parsed = await _parse_invoice_file(raw, file.filename or "")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Preview parse error")
+        raise HTTPException(400, f"Dosya okunamadı: {e}")
+
+    if not parsed:
+        raise HTTPException(400, "Dosyada geçerli fatura satırı bulunamadı")
+
+    # KDV önizleme bilgisi ekle
+    for p in parsed:
+        bd = _invoice_breakdown(float(p["amount"]))
+        p["base_amount"] = bd["base_amount"]
+        p["vat_amount"] = bd["vat_amount"]
+    return {"count": len(parsed), "items": parsed, "filename": file.filename}
+
+
+@api_router.post("/invoices/import-confirm")
+async def import_invoices_confirm(data: ImportConfirmIn, user: dict = Depends(get_current_user)):
+    """Önizlenen satırları toplu kaydet."""
+    if not data.items:
+        raise HTTPException(400, "Kaydedilecek satır yok")
+    created = []
+    for p in data.items:
+        bd = _invoice_breakdown(float(p.amount))
+        doc = {
+            "id": str(uuid.uuid4()),
+            "description": p.description,
+            "amount": round(float(p.amount), 2),
+            "base_amount": bd["base_amount"],
+            "vat_amount": bd["vat_amount"],
+            "date": p.date or _resolve_date(None),
+            "created_by": user["id"],
+            "created_by_name": user["name"],
+            "created_at": now_iso(),
+        }
+        await db.invoices.insert_one(doc)
+        doc.pop("_id", None)
+        created.append(doc)
+    await log_activity(user, "import", "Faturalar", f"{len(created)} fatura içe aktarıldı (önizleme ile)")
+    return {"count": len(created), "items": created}
+
+
 @api_router.get("/activity-logs")
 async def list_logs(limit: int = 500, user: dict = Depends(get_current_user)):
     docs = await db.activity_logs.find({}, {"_id": 0}).sort("timestamp", -1).to_list(limit)

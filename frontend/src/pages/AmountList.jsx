@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { api, formatTRY, formatDate, extractError } from "@/lib/api";
+import { downloadCSV } from "@/lib/csv";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableFooter } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Plus, Pencil, Trash2, TrendingUp, TrendingDown } from "lucide-react";
+import { Plus, Pencil, Trash2, TrendingUp, TrendingDown, Download } from "lucide-react";
 import { toast } from "sonner";
 
 /**
@@ -76,6 +77,22 @@ export default function AmountList({ title, subtitle, endpoint, color = "emerald
     }
   };
 
+  const exportCsv = () => {
+    if (items.length === 0) {
+      toast.info("Dışa aktarılacak kayıt yok");
+      return;
+    }
+    const rows = items.map((i) => [i.date, i.description, i.amount, i.created_by_name, i.created_at]);
+    const total = items.reduce((s, i) => s + Number(i.amount || 0), 0);
+    rows.push(["", "TOPLAM", total, "", ""]);
+    downloadCSV({
+      filename: `${title.toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`,
+      headers: ["Tarih", "Açıklama", "Tutar (TL)", "Ekleyen", "Oluşturma Zamanı"],
+      rows,
+    });
+    toast.success("CSV indirildi");
+  };
+
   const total = items.reduce((s, i) => s + Number(i.amount || 0), 0);
   const Icon = color === "emerald" ? TrendingUp : TrendingDown;
   const tintBg = color === "emerald" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700";
@@ -93,9 +110,14 @@ export default function AmountList({ title, subtitle, endpoint, color = "emerald
             <p className="text-sm text-slate-600 mt-1">{subtitle}</p>
           </div>
         </div>
-        <Button onClick={openNew} className="bg-slate-900 hover:bg-slate-800 text-white" data-testid={`${testIdPrefix}-add-btn`}>
-          <Plus className="w-4 h-4 mr-2" /> Yeni Kayıt
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={exportCsv} className="border-slate-300" data-testid={`${testIdPrefix}-export-csv`}>
+            <Download className="w-4 h-4 mr-2" /> CSV
+          </Button>
+          <Button onClick={openNew} className="bg-slate-900 hover:bg-slate-800 text-white" data-testid={`${testIdPrefix}-add-btn`}>
+            <Plus className="w-4 h-4 mr-2" /> Yeni Kayıt
+          </Button>
+        </div>
       </div>
 
       <Card className="border-slate-200 shadow-sm">
