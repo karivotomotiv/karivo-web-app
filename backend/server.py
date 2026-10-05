@@ -762,11 +762,17 @@ async def send_email(*, to: str, subject: str, html: str) -> Optional[str]:
         resp.raise_for_status()
         return resp.json().get("id")
     except httpx.HTTPStatusError as e:
+        # Pass the real provider message up so the UI can show it
         logger.error(f"Email send failed: {e.response.status_code} {e.response.text}")
-        raise HTTPException(status_code=502, detail="E-posta gönderilemedi")
+        try:
+            body = e.response.json()
+            msg = body.get("message") or body.get("error") or e.response.text
+        except Exception:
+            msg = e.response.text
+        raise HTTPException(status_code=502, detail=f"E-posta gönderilemedi: {msg}")
     except Exception as e:
         logger.error(f"Email send error: {e}")
-        raise HTTPException(status_code=500, detail="E-posta gönderme hatası")
+        raise HTTPException(status_code=500, detail=f"E-posta gönderme hatası: {e}")
 
 
 def _render_low_stock_email(user_name: str, items: list) -> str:
@@ -801,14 +807,15 @@ async def inventory_alerts(user: dict = Depends(get_current_user)):
 
 @api_router.post("/inventory/send-low-stock-email")
 async def send_low_stock_email(user: dict = Depends(get_current_user)):
-    """Düşük stok uyarısını iki kullanıcıya da e-posta ile gönderir."""
+    """Düşük stok uyarısını kullanıcıların kayıtlı bildirim e-postalarına gönderir."""
     all_items = await db.inventory.find({}, {"_id": 0}).to_list(5000)
     low = [i for i in all_items if float(i.get("remaining_qty", 0)) > 0]
     if not low:
         raise HTTPException(400, "Düşük stok bulunmuyor")
 
-    # Alıcıları server-side records'tan al (G4 - caller recipient supply yok)
-    recipients = await db.users.find({}, {"_id": 0, "email": 1, "name": 1}).to_list(10)
+    # Alıcıları server-side records'tan al (G4). Varsa notification_email, yoksa login email.
+    recipients = await db.users.find({}, {"_id": 0, "email": 1, "name": 1, "notification_email": 1}).to_list(10)
+    recipients = [{"email": (u.get("notification_email") or u["email"]), "name": u["name"]} for u in recipients]
     if not recipients:
         raise HTTPException(500, "Alıcı bulunamadı")
 
@@ -827,6 +834,45 @@ async def send_low_stock_email(user: dict = Depends(get_current_user)):
 
     await log_activity(user, "email", "Stok", f"Düşük stok uyarısı gönderildi: {len(sent)} başarılı, {len(failed)} başarısız")
     return {"sent": sent, "failed": failed, "low_stock_count": len(low)}
+
+
+class NotificationSettingsIn(BaseModel):
+    notification_email: Optional[EmailStr] = None
+
+
+@api_router.get("/auth/settings")
+async def get_settings(user: dict = Depends(get_current_user)):
+    """Kullanıcının bildirim ayarlarını döner."""
+    doc = await db.users.find_one({"id": user["id"]}, {"_id": 0, "email": 1, "notification_email": 1, "name": 1})
+    return {
+        "email": doc.get("email"),
+        "name": doc.get("name"),
+        "notification_email": doc.get("notification_email") or "",
+    }
+
+
+@api_router.put("/auth/settings")
+async def update_settings(data: NotificationSettingsIn, user: dict = Depends(get_current_user)):
+    """Kullanıcı bildirim e-posta adresini (gerçek adres) kaydeder."""
+    val = (data.notification_email or "").strip().lower() or None
+    await db.users.update_one({"id": user["id"]}, {"$set": {"notification_email": val}})
+    await log_activity(user, "update", "Ayarlar", f"Bildirim e-postası güncellendi")
+    return {"ok": True, "notification_email": val or ""}
+
+
+@api_router.get("/auth/recipients")
+async def list_recipients(user: dict = Depends(get_current_user)):
+    """Düşük stok uyarısında kullanılacak alıcıları önizler."""
+    users_ = await db.users.find({}, {"_id": 0, "email": 1, "name": 1, "notification_email": 1}).to_list(10)
+    return [
+        {
+            "name": u["name"],
+            "login_email": u["email"],
+            "notification_email": u.get("notification_email") or "",
+            "effective": u.get("notification_email") or u["email"],
+        }
+        for u in users_
+    ]
 
 
 # -----------------------------

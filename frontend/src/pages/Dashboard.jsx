@@ -67,8 +67,16 @@ export default function Dashboard() {
     setSending(true);
     try {
       const { data } = await api.post("/inventory/send-low-stock-email");
-      toast.success(`${data.sent.length} alıcıya uyarı gönderildi (${data.low_stock_count} ürün)`);
-      if (data.failed?.length) toast.warning(`${data.failed.length} alıcıya gönderilemedi`);
+      if (data.sent.length > 0) {
+        toast.success(`${data.sent.length} alıcıya uyarı gönderildi (${data.low_stock_count} ürün)`);
+      }
+      if (data.failed?.length) {
+        const firstError = data.failed[0]?.error || "Bilinmeyen hata";
+        toast.error(
+          `${data.failed.length} alıcıya gönderilemedi. Sebep: ${firstError}. Sol menüden "Bildirim Ayarları" ile gerçek e-posta girin.`,
+          { duration: 8000 }
+        );
+      }
     } catch (e) {
       toast.error(extractError(e));
     } finally {

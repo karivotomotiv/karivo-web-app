@@ -1,6 +1,8 @@
 import { NavLink, Outlet, Navigate } from "react-router-dom";
+import { useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
+import SettingsDialog from "@/components/SettingsDialog";
 import {
   TrendingUp,
   TrendingDown,
@@ -12,6 +14,7 @@ import {
   LogOut,
   Building2,
   LayoutDashboard,
+  Settings,
 } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 
@@ -28,6 +31,7 @@ const NAV = [
 
 export default function Layout() {
   const { user, loading, logout } = useAuth();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   if (loading) {
     return (
@@ -91,6 +95,16 @@ export default function Layout() {
           <Button
             variant="outline"
             size="sm"
+            onClick={() => setSettingsOpen(true)}
+            className="w-full border-slate-200 text-slate-700 hover:bg-slate-100"
+            data-testid="settings-btn"
+          >
+            <Settings className="w-4 h-4 mr-2" />
+            Bildirim Ayarları
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             onClick={logout}
             className="w-full border-slate-200 text-slate-700 hover:bg-red-50 hover:text-red-700 hover:border-red-300"
             data-testid="logout-btn"
@@ -116,6 +130,7 @@ export default function Layout() {
         </div>
       </main>
 
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
       <Toaster position="top-right" richColors />
     </div>
   );

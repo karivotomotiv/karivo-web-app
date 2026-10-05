@@ -1,0 +1,44 @@
+{
+  "summary": "Iteration-2 testing covers 4 new features: monthly-trend chart, inventory alerts + low-stock email, CSV export (incomes/expenses/invoices), and invoice import preview+confirm. Backend: 23/23 pytest passed (1 skipped). All new endpoints behave per spec: /api/dashboard/monthly-trend returns rows with keys {month,income,expense,invoice,vat,profit} and profit=income-expense; /api/inventory/alerts returns only items with remaining_qty>0; /api/inventory/send-low-stock-email returns 400 when no low stock; /api/invoices/import-preview parses xlsx WITHOUT persisting (verified by unique-description check); /api/invoices/import-confirm persists modified amounts with correct VAT breakdown (edited 1200→2400 confirmed → base=2000, vat=400). Frontend: Login, dashboard chart (recharts ComposedChart renders with svg), low-stock alert banner shows '2 ürün için stok eksik' with product names, email button triggers endpoint (returns 200 but with sent=0/failed=2 — see critical note), Gelirler CSV downloaded 'gelirler-2026-10-05.csv', Faturalar CSV downloaded 'faturalar-2026-10-05.csv', Giderler CSV shows 'kayıt yok' toast (no expense data; expected), Faturalar import preview dialog opens on file selection, row toggle updates selected count from 2→1, amount edit 1200→6000 recomputes VAT to ₺1.000,00 (correct), confirm saves only selected row with modified amount (TEST_UI_prev_1 persisted at ₺6.000,00; TEST_UI_prev_2 deselected and NOT persisted), activity log contains 'Düşük stok' email + 'içe aktarıldı' import entries.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "/api/inventory/send-low-stock-email", "issue": "Endpoint returns HTTP 200 but Resend proxy reports sent=0, failed=2 for both seeded users (ahmet@sirket.com, ayse@sirket.com). All send attempts fail — likely demo-domain emails cannot be delivered by Resend (unverified domain or sandbox restriction). Response schema is correct but no email is actually delivered.", "priority": "HIGH"}
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Low-stock email send", "issue": "UI toast correctly shows '2 alıcıya gönderilemedi' + '0 alıcıya uyarı gönderildi' — reflects backend failure accurately. User sees a warning toast but no clear remediation hint (e.g., 'E-posta sağlayıcısı mesajı reddetti').", "affected_selectors": ["[data-testid='low-stock-email-btn']"]}
+    ],
+    "design_issues": [
+      {"screen": "Dashboard", "issues": ["Recharts emits console warnings 'The width(-1) and height(-1) of chart should be greater than 0' on initial render (ResponsiveContainer measures before layout). Non-blocking but noisy in console."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Investigate Resend email delivery: the proxy accepts the request but marks it failed for seeded demo recipients. Options: (a) verify the sender domain + add verified recipients, (b) switch to a Resend sandbox-friendly test address, or (c) surface the proxy error reason in the response/toast so the user knows WHY delivery failed. Current `send_email` in server.py swallows the per-recipient error detail into `str(e.detail)` which is just 'E-posta gönderilemedi'. Consider including the Resend body in failed[].error for debuggability.",
+    "Optional: fix the recharts width(-1) warning by giving the ResponsiveContainer parent an explicit min-height or using aspect prop."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 1099 lines — splitting into routers (auth/finance/inventory/email/dashboard) is overdue.",
+    "send_email on HTTPStatusError raises a generic HTTPException(502,'E-posta gönderilemedi') and drops the Resend response body. The per-recipient failed[].error becomes just the generic Turkish string, hiding the real cause (useful for debugging domain/API key problems).",
+    "import-preview reads the uploaded file fully into memory (await file.read()) with no size cap — a large xlsx could DoS. Consider UploadFile size validation or streaming.",
+    "import-confirm does not re-run _assert_safe_email-like sanitation on description field; while invoice descriptions aren't emails, trusting client input for description/amount in bulk is OK but ensure amount>0 validation exists (currently _invoice_breakdown would compute negatives if amount<=0).",
+    "Preview dialog in Faturalar.jsx auto-opens from onChange on the hidden file input, so the 'Excel/PDF Yükle' button is actually a label trigger — this is fine but noteworthy for tests.",
+    "exportCsv in Faturalar.jsx uses date formatting via toISOString().slice(0,10) which is UTC — may show previous day for TR users around midnight. Minor."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (added TestMonthlyTrend, TestInventoryAlerts, TestInvoiceImportPreviewConfirm classes — 7 new tests, all passing)"
+  ],
+  "success_rate": {"backend": "100% (23/23 passed, 1 skipped by design)", "frontend": "100% core new flows; email delivery itself fails at Resend proxy"},
+  "test_credentials": "ahmet@sirket.com / Ahmet2026!  and  ayse@sirket.com / Ayse2026!",
+  "seed_data_creation": "Backend tests create TEST_ prefixed invoices/inventory and clean up after each test. Frontend test created TEST_UI_prev_1 invoice via preview-confirm (left in DB) and a TEST_mail_low inventory item (cleaned up).",
+  "retest_needed": true,
+  "main_agent_can_self_test": false,
+  "context_for_next_testing_agent": "backend_test.py now has 24 tests across 10 classes using pytest-xdist (LoadScope). The low-stock email test (TestInventoryAlerts.test_send_low_stock_email_sends) prints EMAIL RESULT with sent/failed counts — currently both recipients fail at Resend. Preview test uses unique description strings ('TEST_prev_unique_abc/xyz') to avoid parallel-cleanup race. /tmp/test_preview.xlsx is reusable fixture. Public URL: https://accounting-app-207.preview.emergentagent.com.",
+  "rca of the issue": "Low-stock email failure RCA: send_email catches httpx.HTTPStatusError and raises HTTPException(502) with generic detail. The route-level handler catches HTTPException and appends {email, error:'E-posta gönderilemedi'} to failed[]. The underlying Resend proxy response body (which would reveal e.g. 'domain not verified' or 'invalid recipient') is logged to backend logger but not propagated. Reproduction: POST /api/inventory/send-low-stock-email with at least one low-stock item and bearer token → 200 with sent=[], failed=[{email:'ahmet@...',error:'E-posta gönderilemedi'},{email:'ayse@...',error:'E-posta gönderilemedi'}]. Mitigation (main agent): (1) check /var/log/supervisor/backend.err.log for 'Email send failed: ...' lines to see the real Resend error; (2) include resp.text in failed[].error for 4xx/5xx cases; (3) verify EMERGENT_EMAIL_KEY is active and the sender/recipients are allowed."
+}
