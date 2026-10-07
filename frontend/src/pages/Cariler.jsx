@@ -70,6 +70,7 @@ export default function Cariler() {
 
   const totalAlacak = filtered.reduce((s, i) => s + Number(i.total_alacak || 0), 0);
   const totalBorc = filtered.reduce((s, i) => s + Number(i.total_borc || 0), 0);
+  const totalNet = filtered.reduce((s, i) => s + Number(i.net || 0), 0);
 
   return (
     <div className="space-y-6">
@@ -167,8 +168,8 @@ export default function Cariler() {
                   <TableCell colSpan={2} className="font-bold text-xs uppercase tracking-wider">Genel Toplam</TableCell>
                   <TableCell className="text-right font-extrabold text-emerald-700" data-testid="cari-total-alacak">{formatTRY(totalAlacak)}</TableCell>
                   <TableCell className="text-right font-extrabold text-rose-700" data-testid="cari-total-borc">{formatTRY(totalBorc)}</TableCell>
-                  <TableCell className={`text-right font-extrabold ${totalAlacak - totalBorc >= 0 ? "text-emerald-700" : "text-rose-700"}`} data-testid="cari-total-net">
-                    {formatTRY(totalAlacak - totalBorc)}
+                  <TableCell className={`text-right font-extrabold ${totalNet >= 0 ? "text-emerald-700" : "text-rose-700"}`} data-testid="cari-total-net">
+                    {formatTRY(totalNet)}
                   </TableCell>
                   <TableCell colSpan={2} />
                 </TableRow>

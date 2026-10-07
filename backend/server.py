@@ -1294,8 +1294,9 @@ async def monthly_trend(user: dict = Depends(get_current_user)):
         b = buckets.setdefault(m, {"month": m, "income": 0, "expense": 0, "invoice": 0, "vat": 0})
         if row.get("type") == "alacak":
             b["income"] += float(row.get("amount", 0))
-        else:
+        elif row.get("type") == "borc":
             b["expense"] += float(row.get("amount", 0))
+        # odeme: not reflected in dashboard income/expense (only affects per-cari remaining)
 
     rows = []
     for m in sorted(buckets.keys()):

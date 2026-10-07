@@ -628,6 +628,123 @@ class TestCariIncomeExpense:
         finally:
             requests.delete(f"{API}/cariler/{cid}", headers=h1, timeout=20)
 
+    # ---------- iter-5: odeme ----------
+    def test_odeme_flow_and_remaining_alacak(self, h1):
+        r = requests.post(f"{API}/cariler", headers=h1, json={"name": "TEST_cari_ODEME"}, timeout=20)
+        cid = r.json()["id"]
+        try:
+            # alacak 5000
+            requests.post(f"{API}/cariler/{cid}/transactions", headers=h1,
+                          json={"type": "alacak", "amount": 5000, "date": "2026-04-01"}, timeout=20)
+            # borc 1500
+            requests.post(f"{API}/cariler/{cid}/transactions", headers=h1,
+                          json={"type": "borc", "amount": 1500, "date": "2026-04-02"}, timeout=20)
+            # odeme 2000
+            r = requests.post(f"{API}/cariler/{cid}/transactions", headers=h1,
+                              json={"type": "odeme", "amount": 2000, "date": "2026-04-03"}, timeout=20)
+            assert r.status_code == 200, r.text
+            assert r.json()["type"] == "odeme"
+            odeme_id = r.json()["id"]
+
+            d = requests.get(f"{API}/cariler/{cid}", headers=h1, timeout=20).json()
+            assert d["total_alacak"] == 5000.0
+            assert d["total_odeme"] == 2000.0
+            assert d["remaining_alacak"] == 3000.0
+            assert d["total_borc"] == 1500.0
+            assert d["net"] == 1500.0  # remaining - borc
+            assert d["tx_count"] == 3
+
+            # Delete odeme => remaining goes back up
+            r = requests.delete(f"{API}/cariler/{cid}/transactions/{odeme_id}", headers=h1, timeout=20)
+            assert r.status_code == 200
+            d = requests.get(f"{API}/cariler/{cid}", headers=h1, timeout=20).json()
+            assert d["total_odeme"] == 0.0
+            assert d["remaining_alacak"] == 5000.0
+            assert d["net"] == 3500.0
+            assert d["tx_count"] == 2
+        finally:
+            requests.delete(f"{API}/cariler/{cid}", headers=h1, timeout=20)
+
+    def test_odeme_invalid_type_422(self, h1):
+        r = requests.post(f"{API}/cariler", headers=h1, json={"name": "TEST_cari_BADTYPE"}, timeout=20)
+        cid = r.json()["id"]
+        try:
+            r = requests.post(f"{API}/cariler/{cid}/transactions", headers=h1,
+                              json={"type": "xyz", "amount": 100, "date": "2026-04-01"}, timeout=20)
+            assert r.status_code == 422
+        finally:
+            requests.delete(f"{API}/cariler/{cid}", headers=h1, timeout=20)
+
+    def test_put_alacak_to_odeme_recomputes(self, h1):
+        r = requests.post(f"{API}/cariler", headers=h1, json={"name": "TEST_cari_SWITCH"}, timeout=20)
+        cid = r.json()["id"]
+        try:
+            r = requests.post(f"{API}/cariler/{cid}/transactions", headers=h1,
+                              json={"type": "alacak", "amount": 1000, "date": "2026-04-05"}, timeout=20)
+            tx_id = r.json()["id"]
+            # also another alacak so remaining calculation is observable
+            requests.post(f"{API}/cariler/{cid}/transactions", headers=h1,
+                          json={"type": "alacak", "amount": 2000, "date": "2026-04-06"}, timeout=20)
+
+            d = requests.get(f"{API}/cariler/{cid}", headers=h1, timeout=20).json()
+            assert d["total_alacak"] == 3000.0 and d["total_odeme"] == 0.0 and d["remaining_alacak"] == 3000.0
+
+            # Switch tx_id from alacak -> odeme
+            r = requests.put(f"{API}/cariler/{cid}/transactions/{tx_id}", headers=h1,
+                             json={"type": "odeme", "amount": 1000, "date": "2026-04-05"}, timeout=20)
+            assert r.status_code == 200
+            d = requests.get(f"{API}/cariler/{cid}", headers=h1, timeout=20).json()
+            assert d["total_alacak"] == 2000.0
+            assert d["total_odeme"] == 1000.0
+            assert d["remaining_alacak"] == 1000.0
+            assert d["net"] == 1000.0
+        finally:
+            requests.delete(f"{API}/cariler/{cid}", headers=h1, timeout=20)
+
+    def test_summary_unaffected_by_odeme(self, h1):
+        r = requests.post(f"{API}/cariler", headers=h1, json={"name": "TEST_cari_SUMODE"}, timeout=20)
+        cid = r.json()["id"]
+        try:
+            # Baseline
+            before = requests.get(f"{API}/summary", headers=h1, timeout=20).json()
+            # Add alacak + odeme
+            requests.post(f"{API}/cariler/{cid}/transactions", headers=h1,
+                          json={"type": "alacak", "amount": 500, "date": "2026-06-01"}, timeout=20)
+            after_alacak = requests.get(f"{API}/summary", headers=h1, timeout=20).json()
+            assert round(after_alacak["cari_alacak"] - before["cari_alacak"], 2) == 500.0
+
+            requests.post(f"{API}/cariler/{cid}/transactions", headers=h1,
+                          json={"type": "odeme", "amount": 300, "date": "2026-06-02"}, timeout=20)
+            after_odeme = requests.get(f"{API}/summary", headers=h1, timeout=20).json()
+            # cari_alacak unchanged by odeme (gross)
+            assert after_odeme["cari_alacak"] == after_alacak["cari_alacak"]
+            assert after_odeme["total_income"] == after_alacak["total_income"]
+            assert after_odeme["cari_borc"] == after_alacak["cari_borc"]
+        finally:
+            requests.delete(f"{API}/cariler/{cid}", headers=h1, timeout=20)
+
+    def test_monthly_trend_unaffected_by_odeme_only(self, h1):
+        r = requests.post(f"{API}/cariler", headers=h1, json={"name": "TEST_cari_MT_ODE"}, timeout=20)
+        cid = r.json()["id"]
+        month = "2026-07"
+        try:
+            before = requests.get(f"{API}/dashboard/monthly-trend", headers=h1, timeout=20).json()
+            before_row = next((x for x in before if x["month"] == month), None)
+            before_income = before_row["income"] if before_row else 0.0
+            before_expense = before_row["expense"] if before_row else 0.0
+
+            # Only an odeme in this month
+            requests.post(f"{API}/cariler/{cid}/transactions", headers=h1,
+                          json={"type": "odeme", "amount": 999, "date": f"{month}-10"}, timeout=20)
+            after = requests.get(f"{API}/dashboard/monthly-trend", headers=h1, timeout=20).json()
+            after_row = next((x for x in after if x["month"] == month), None)
+            after_income = after_row["income"] if after_row else 0.0
+            after_expense = after_row["expense"] if after_row else 0.0
+            assert after_income == before_income
+            assert after_expense == before_expense
+        finally:
+            requests.delete(f"{API}/cariler/{cid}", headers=h1, timeout=20)
+
     def test_monthly_trend_includes_cari(self, h1):
         r = requests.post(f"{API}/cariler", headers=h1, json={"name": "TEST_cari_MT"}, timeout=20)
         cid = r.json()["id"]

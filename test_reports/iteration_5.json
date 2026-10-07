@@ -1,0 +1,34 @@
+{
+  "summary": "Iteration-5 odeme (incoming payment) feature tested end-to-end. Backend: extended backend_test.py with 5 new tests under TestCariIncomeExpense covering odeme CRUD, remaining_alacak math (alacak=5000+borc=1500+odeme=2000 => total_alacak=5000 total_odeme=2000 remaining=3000 net=1500 tx_count=3), invalid-type 422, PUT alacak->odeme recomputation, summary unaffected by odeme, and monthly-trend NOT affected by odeme-only cari. 43 passed, 1 skipped. Found and fixed a backend bug in /api/dashboard/monthly-trend where cari odeme transactions were being miscounted as expense (else-branch). Frontend: verified 3 action buttons, 4 KPI cards with correct testids and values, Net Bakiye uses remaining-borc=1500 ✓, 4-way tabs with correct per-type counts, Ödeme column in tx table, ÖDEME badge in sky-100, 3-way type toggle, dialog hint 'alacaktan düşülür', save button color sky/emerald/rose per type.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/dashboard/monthly-trend", "issue": "Pre-fix: odeme txs were added to expense via else-branch — contradicted spec. FIXED in server.py line 1297 (now elif type=='borc'). Verified via new test test_monthly_trend_unaffected_by_odeme_only."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Cariler list (/cariler) GENEL TOPLAM Net column", "issues": ["Footer Net total uses totalAlacak - totalBorc (= 3500) ignoring odeme; per-row Net correctly uses backend 'net' field (1500). For consistency, footer should sum the per-row 'net' values (or use sum(remaining_alacak) - sum(total_borc)). Minor cosmetic inconsistency between row and footer values."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "(optional, minor) Update Cariler.jsx line 170-172 to compute footer Net from sum of it.net instead of totalAlacak - totalBorc so it reflects odeme deductions consistently."
+  ],
+  "critical_code_review_comments": [
+    "server.py monthly_trend had silent bug: `else` branch after `if type=='alacak'` caught both 'borc' AND new 'odeme' type, inflating expense buckets. Fixed to explicit `elif type=='borc'`. Reminder: always use explicit elif/branches when adding new Literal values to avoid such regressions.",
+    "Cariler list footer uses computed total that diverges from the per-row backend net; a single source of truth (backend field) is preferable."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/server.py (1-line fix: elif type=='borc')"
+  ],
+  "success_rate": {"backend": "100% (43 passed, 1 skipped)", "frontend": "100% of iter-5 UI acceptance checks"},
+  "test_credentials": "murat@karivo.local / Murat2026!, ozkan@karivo.local / Ozkan2026!",
+  "seed_data_creation": "Existing 'Test Oto' cari (alacak=5000, borc=1500, odeme=2000) kept as smoke data. All TEST_* cariler created by tests are cleaned up.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "backend_test.py now covers alacak/borc/odeme fully. Monthly-trend bug for odeme is fixed. If iteration-6 adds another CariType value, remember to update the explicit elif in monthly_trend (server.py:1295-1299) and _attach_cari_totals. Minor footer-net inconsistency on Cariler list page is left for main agent to decide."
+}
