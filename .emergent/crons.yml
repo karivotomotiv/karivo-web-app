@@ -1,0 +1,8 @@
+crons:
+  - name: monthly-report
+    description: "Her ayın 1'inde kullanıcılara önceki ayın gelir/gider/KDV özet raporunu e-postayla gönderir"
+    cron: "0 9 1 * *"
+    endpoint: "{{BASE_URL}}/api/cron/monthly-report"
+    method: POST
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    enabled: true

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { api, formatTRY, formatDate, extractError } from "@/lib/api";
 import { downloadCSV } from "@/lib/csv";
+import FilterBar, { applyFilter, monthLabelFromKey } from "@/components/FilterBar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,6 +23,8 @@ export default function Faturalar() {
   const [previewItems, setPreviewItems] = useState([]);
   const [previewFilename, setPreviewFilename] = useState("");
   const [confirming, setConfirming] = useState(false);
+  const [month, setMonth] = useState("all");
+  const [search, setSearch] = useState("");
   const fileRef = useRef(null);
 
   const load = async () => {
@@ -141,24 +144,34 @@ export default function Faturalar() {
   };
 
   const exportCsv = () => {
-    if (items.length === 0) {
+    const data = filtered;
+    if (data.length === 0) {
       toast.info("Dışa aktarılacak fatura yok");
       return;
     }
-    const rows = items.map((i) => [i.date, i.description, i.base_amount, i.vat_amount, i.amount, i.created_by_name]);
-    rows.push(["", "TOPLAM", totalBase, totalVat, totalGross, ""]);
+    const rows = data.map((i) => [i.date, i.description, i.base_amount, i.vat_amount, i.amount, i.created_by_name]);
+    const subBase = data.reduce((s, i) => s + Number(i.base_amount || 0), 0);
+    const subVat = data.reduce((s, i) => s + Number(i.vat_amount || 0), 0);
+    const subGross = data.reduce((s, i) => s + Number(i.amount || 0), 0);
+    rows.push(["", "TOPLAM", subBase, subVat, subGross, ""]);
+    const suffix = month && month !== "all" ? `-${month}` : "";
     downloadCSV({
-      filename: `faturalar-${new Date().toISOString().slice(0, 10)}.csv`,
+      filename: `faturalar${suffix}-${new Date().toISOString().slice(0, 10)}.csv`,
       headers: ["Tarih", "Açıklama", "KDV Hariç (TL)", "KDV %20 (TL)", "KDV Dahil (TL)", "Ekleyen"],
       rows,
     });
     toast.success("CSV indirildi");
   };
 
+  const filtered = useMemo(
+    () => applyFilter(items, { month, search, searchKeys: ["description", "created_by_name"] }),
+    [items, month, search]
+  );
   const previewVat = form.amount ? Number(form.amount) - Number(form.amount) / 1.2 : 0;
-  const totalGross = items.reduce((s, i) => s + Number(i.amount || 0), 0);
-  const totalVat = items.reduce((s, i) => s + Number(i.vat_amount || 0), 0);
-  const totalBase = items.reduce((s, i) => s + Number(i.base_amount || 0), 0);
+  const totalGross = filtered.reduce((s, i) => s + Number(i.amount || 0), 0);
+  const totalVat = filtered.reduce((s, i) => s + Number(i.vat_amount || 0), 0);
+  const totalBase = filtered.reduce((s, i) => s + Number(i.base_amount || 0), 0);
+  const grandTotalGross = items.reduce((s, i) => s + Number(i.amount || 0), 0);
 
   const previewTotals = {
     gross: previewItems.filter((p) => p.selected).reduce((s, i) => s + Number(i.amount || 0), 0),
@@ -241,6 +254,16 @@ export default function Faturalar() {
       )}
 
       <Card className="border-slate-200 shadow-sm">
+        <CardContent className="p-4 border-b border-slate-100">
+          <FilterBar
+            items={items}
+            month={month} setMonth={setMonth}
+            search={search} setSearch={setSearch}
+            searchKeys={["description", "created_by_name"]}
+            testIdPrefix="invoice"
+            placeholder="Fatura açıklamasında ara..."
+          />
+        </CardContent>
         <CardContent className="p-0">
           <Table>
             <TableHeader>
@@ -255,14 +278,14 @@ export default function Faturalar() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {items.length === 0 && (
+              {filtered.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center text-slate-500 py-10">
-                    Henüz fatura yok. "Yeni Fatura" ekleyin veya Excel/PDF yükleyin.
+                    {items.length === 0 ? 'Henüz fatura yok. "Yeni Fatura" ekleyin veya Excel/PDF yükleyin.' : "Filtreyle eşleşen fatura yok."}
                   </TableCell>
                 </TableRow>
               )}
-              {items.map((it) => (
+              {filtered.map((it) => (
                 <TableRow key={it.id} data-testid={`invoice-row-${it.id}`}>
                   <TableCell className="text-slate-700">{formatDate(it.date)}</TableCell>
                   <TableCell className="font-medium text-slate-900">{it.description}</TableCell>
@@ -283,15 +306,24 @@ export default function Faturalar() {
                 </TableRow>
               ))}
             </TableBody>
-            {items.length > 0 && (
+            {filtered.length > 0 && (
               <TableFooter>
                 <TableRow className="bg-slate-50">
-                  <TableCell colSpan={3} className="font-bold text-slate-900 uppercase text-xs tracking-wider">Toplam</TableCell>
+                  <TableCell colSpan={3} className="font-bold text-slate-900 uppercase text-xs tracking-wider">
+                    {month && month !== "all" ? `${monthLabelFromKey(month)} Toplamı` : "Toplam"}
+                  </TableCell>
                   <TableCell className="text-right font-bold text-slate-900">{formatTRY(totalBase)}</TableCell>
                   <TableCell className="text-right font-extrabold text-indigo-700" data-testid="invoice-total-vat">{formatTRY(totalVat)}</TableCell>
                   <TableCell className="text-right font-extrabold text-lg text-slate-900" data-testid="invoice-total-gross">{formatTRY(totalGross)}</TableCell>
                   <TableCell />
                 </TableRow>
+                {month && month !== "all" && grandTotalGross !== totalGross && (
+                  <TableRow className="bg-slate-50/50">
+                    <TableCell colSpan={5} className="font-semibold text-slate-500 uppercase text-xs tracking-wider">Tüm Zamanlar Toplamı</TableCell>
+                    <TableCell className="text-right font-bold text-slate-700">{formatTRY(grandTotalGross)}</TableCell>
+                    <TableCell />
+                  </TableRow>
+                )}
               </TableFooter>
             )}
           </Table>

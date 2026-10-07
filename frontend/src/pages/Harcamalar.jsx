@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { api, formatTRY, formatDate, extractError } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
+import FilterBar, { applyFilter, monthLabelFromKey } from "@/components/FilterBar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,10 +12,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Plus, Pencil, Trash2, Wallet, Building, User, Users } from "lucide-react";
 import { toast } from "sonner";
 
+// Kategori etiketleri — user1 = Murat, user2 = Özkan (env'den gelen isimler)
 const CATS = [
-  { key: "company", label: "Şirket Harcamaları", Icon: Building, color: "bg-slate-100 text-slate-700" },
-  { key: "user1", label: "Kullanıcı 1 Harcamaları", Icon: User, color: "bg-teal-100 text-teal-700" },
-  { key: "user2", label: "Kullanıcı 2 Harcamaları", Icon: Users, color: "bg-violet-100 text-violet-700" },
+  { key: "company", label: "Şirket Harcamaları", short: "Şirket", Icon: Building },
+  { key: "user1", label: "Murat Harcamaları", short: "Murat", Icon: User },
+  { key: "user2", label: "Özkan Harcamaları", short: "Özkan", Icon: Users },
 ];
 
 export default function Harcamalar() {
@@ -23,6 +26,12 @@ export default function Harcamalar() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ name: "", amount: "", date: "" });
   const [loading, setLoading] = useState(false);
+  // Filter state per tab
+  const [filters, setFilters] = useState({
+    company: { month: "all", search: "" },
+    user1: { month: "all", search: "" },
+    user2: { month: "all", search: "" },
+  });
 
   const load = async () => {
     try { const { data } = await api.get("/spendings"); setAll(data); }
@@ -67,59 +76,88 @@ export default function Harcamalar() {
     catch (e) { toast.error(extractError(e)); }
   };
 
+  const setTabFilter = (cat, patch) => setFilters((prev) => ({ ...prev, [cat]: { ...prev[cat], ...patch } }));
+
   const renderTable = (cat) => {
     const rows = all.filter((x) => x.category === cat);
-    const total = rows.reduce((s, i) => s + Number(i.amount || 0), 0);
+    const f = filters[cat];
+    const filtered = applyFilter(rows, { month: f.month, search: f.search, searchKeys: ["name", "created_by_name"] });
+    const total = filtered.reduce((s, i) => s + Number(i.amount || 0), 0);
+    const grand = rows.reduce((s, i) => s + Number(i.amount || 0), 0);
+
     return (
-      <Card className="border-slate-200 shadow-sm mt-4">
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-slate-50">
-                <TableHead>Tarih</TableHead>
-                <TableHead>Harcama Adı</TableHead>
-                <TableHead>Ekleyen</TableHead>
-                <TableHead className="text-right">Tutar</TableHead>
-                <TableHead className="text-right">İşlem</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.length === 0 && (
-                <TableRow><TableCell colSpan={5} className="text-center text-slate-500 py-10">Henüz harcama yok.</TableCell></TableRow>
-              )}
-              {rows.map((it) => (
-                <TableRow key={it.id} data-testid={`spending-row-${it.id}`}>
-                  <TableCell className="text-slate-700">{formatDate(it.date)}</TableCell>
-                  <TableCell className="font-medium text-slate-900">{it.name}</TableCell>
-                  <TableCell className="text-slate-500 text-sm">{it.created_by_name}</TableCell>
-                  <TableCell className="text-right font-semibold">{formatTRY(it.amount)}</TableCell>
-                  <TableCell className="text-right">
-                    <div className="inline-flex gap-1">
-                      <Button variant="ghost" size="sm" onClick={() => openEdit(it)} data-testid={`spending-edit-${it.id}`}>
-                        <Pencil className="w-4 h-4" />
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={() => remove(it.id)} className="text-rose-600 hover:bg-rose-50" data-testid={`spending-delete-${it.id}`}>
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-            {rows.length > 0 && (
-              <TableFooter>
+      <>
+        <Card className="border-slate-200 shadow-sm mt-4">
+          <CardContent className="p-4 border-b border-slate-100">
+            <FilterBar
+              items={rows}
+              month={f.month} setMonth={(m) => setTabFilter(cat, { month: m })}
+              search={f.search} setSearch={(s) => setTabFilter(cat, { search: s })}
+              searchKeys={["name", "created_by_name"]}
+              testIdPrefix={`spending-${cat}`}
+              placeholder="Harcama adında ara..."
+            />
+          </CardContent>
+          <CardContent className="p-0">
+            <Table>
+              <TableHeader>
                 <TableRow className="bg-slate-50">
-                  <TableCell colSpan={3} className="font-bold uppercase text-xs tracking-wider">Toplam</TableCell>
-                  <TableCell className="text-right font-extrabold text-lg text-slate-900" data-testid={`spending-total-${cat}`}>
-                    {formatTRY(total)}
-                  </TableCell>
-                  <TableCell />
+                  <TableHead>Tarih</TableHead>
+                  <TableHead>Harcama Adı</TableHead>
+                  <TableHead>Ekleyen</TableHead>
+                  <TableHead className="text-right">Tutar</TableHead>
+                  <TableHead className="text-right">İşlem</TableHead>
                 </TableRow>
-              </TableFooter>
-            )}
-          </Table>
-        </CardContent>
-      </Card>
+              </TableHeader>
+              <TableBody>
+                {filtered.length === 0 && (
+                  <TableRow><TableCell colSpan={5} className="text-center text-slate-500 py-10">
+                    {rows.length === 0 ? "Henüz harcama yok." : "Filtreyle eşleşen kayıt yok."}
+                  </TableCell></TableRow>
+                )}
+                {filtered.map((it) => (
+                  <TableRow key={it.id} data-testid={`spending-row-${it.id}`}>
+                    <TableCell className="text-slate-700">{formatDate(it.date)}</TableCell>
+                    <TableCell className="font-medium text-slate-900">{it.name}</TableCell>
+                    <TableCell className="text-slate-500 text-sm">{it.created_by_name}</TableCell>
+                    <TableCell className="text-right font-semibold">{formatTRY(it.amount)}</TableCell>
+                    <TableCell className="text-right">
+                      <div className="inline-flex gap-1">
+                        <Button variant="ghost" size="sm" onClick={() => openEdit(it)} data-testid={`spending-edit-${it.id}`}>
+                          <Pencil className="w-4 h-4" />
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => remove(it.id)} className="text-rose-600 hover:bg-rose-50" data-testid={`spending-delete-${it.id}`}>
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+              {filtered.length > 0 && (
+                <TableFooter>
+                  <TableRow className="bg-slate-50">
+                    <TableCell colSpan={3} className="font-bold uppercase text-xs tracking-wider">
+                      {f.month && f.month !== "all" ? `${monthLabelFromKey(f.month)} Toplamı` : "Toplam"}
+                    </TableCell>
+                    <TableCell className="text-right font-extrabold text-lg text-slate-900" data-testid={`spending-total-${cat}`}>
+                      {formatTRY(total)}
+                    </TableCell>
+                    <TableCell />
+                  </TableRow>
+                  {f.month && f.month !== "all" && grand !== total && (
+                    <TableRow className="bg-slate-50/50">
+                      <TableCell colSpan={3} className="font-semibold text-slate-500 uppercase text-xs tracking-wider">Tüm Zamanlar Toplamı</TableCell>
+                      <TableCell className="text-right font-bold text-slate-700">{formatTRY(grand)}</TableCell>
+                      <TableCell />
+                    </TableRow>
+                  )}
+                </TableFooter>
+              )}
+            </Table>
+          </CardContent>
+        </Card>
+      </>
     );
   };
 

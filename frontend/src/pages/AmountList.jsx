@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { api, formatTRY, formatDate, extractError } from "@/lib/api";
 import { downloadCSV } from "@/lib/csv";
+import FilterBar, { applyFilter, monthLabelFromKey } from "@/components/FilterBar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,6 +20,8 @@ export default function AmountList({ title, subtitle, endpoint, color = "emerald
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ description: "", amount: "", date: "" });
   const [loading, setLoading] = useState(false);
+  const [month, setMonth] = useState("all");
+  const [search, setSearch] = useState("");
 
   const load = async () => {
     try {
@@ -29,6 +32,11 @@ export default function AmountList({ title, subtitle, endpoint, color = "emerald
     }
   };
   useEffect(() => { load(); }, []); // eslint-disable-line
+
+  const filtered = useMemo(
+    () => applyFilter(items, { month, search, searchKeys: ["description", "created_by_name"] }),
+    [items, month, search]
+  );
 
   const openNew = () => {
     setEditing(null);
@@ -78,22 +86,25 @@ export default function AmountList({ title, subtitle, endpoint, color = "emerald
   };
 
   const exportCsv = () => {
-    if (items.length === 0) {
+    const data = filtered;
+    if (data.length === 0) {
       toast.info("Dışa aktarılacak kayıt yok");
       return;
     }
-    const rows = items.map((i) => [i.date, i.description, i.amount, i.created_by_name, i.created_at]);
-    const total = items.reduce((s, i) => s + Number(i.amount || 0), 0);
+    const rows = data.map((i) => [i.date, i.description, i.amount, i.created_by_name, i.created_at]);
+    const total = data.reduce((s, i) => s + Number(i.amount || 0), 0);
     rows.push(["", "TOPLAM", total, "", ""]);
+    const suffix = month && month !== "all" ? `-${month}` : "";
     downloadCSV({
-      filename: `${title.toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`,
+      filename: `${title.toLowerCase()}${suffix}-${new Date().toISOString().slice(0, 10)}.csv`,
       headers: ["Tarih", "Açıklama", "Tutar (TL)", "Ekleyen", "Oluşturma Zamanı"],
       rows,
     });
     toast.success("CSV indirildi");
   };
 
-  const total = items.reduce((s, i) => s + Number(i.amount || 0), 0);
+  const total = filtered.reduce((s, i) => s + Number(i.amount || 0), 0);
+  const grandTotal = items.reduce((s, i) => s + Number(i.amount || 0), 0);
   const Icon = color === "emerald" ? TrendingUp : TrendingDown;
   const tintBg = color === "emerald" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700";
   const totalColor = color === "emerald" ? "text-emerald-700" : "text-rose-700";
@@ -121,6 +132,15 @@ export default function AmountList({ title, subtitle, endpoint, color = "emerald
       </div>
 
       <Card className="border-slate-200 shadow-sm">
+        <CardContent className="p-4 border-b border-slate-100">
+          <FilterBar
+            items={items}
+            month={month} setMonth={setMonth}
+            search={search} setSearch={setSearch}
+            searchKeys={["description", "created_by_name"]}
+            testIdPrefix={testIdPrefix}
+          />
+        </CardContent>
         <CardContent className="p-0">
           <Table>
             <TableHeader>
@@ -133,14 +153,14 @@ export default function AmountList({ title, subtitle, endpoint, color = "emerald
               </TableRow>
             </TableHeader>
             <TableBody>
-              {items.length === 0 && (
+              {filtered.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={5} className="text-center text-slate-500 py-10">
-                    Henüz kayıt yok. "Yeni Kayıt" ile ekleyin.
+                    {items.length === 0 ? 'Henüz kayıt yok. "Yeni Kayıt" ile ekleyin.' : "Filtreyle eşleşen kayıt yok."}
                   </TableCell>
                 </TableRow>
               )}
-              {items.map((it) => (
+              {filtered.map((it) => (
                 <TableRow key={it.id} data-testid={`${testIdPrefix}-row-${it.id}`}>
                   <TableCell className="text-slate-700">{formatDate(it.date)}</TableCell>
                   <TableCell className="font-medium text-slate-900">{it.description}</TableCell>
@@ -159,15 +179,28 @@ export default function AmountList({ title, subtitle, endpoint, color = "emerald
                 </TableRow>
               ))}
             </TableBody>
-            {items.length > 0 && (
+            {filtered.length > 0 && (
               <TableFooter>
                 <TableRow className="bg-slate-50">
-                  <TableCell colSpan={3} className="font-bold text-slate-900 uppercase text-xs tracking-wider">Toplam</TableCell>
+                  <TableCell colSpan={3} className="font-bold text-slate-900 uppercase text-xs tracking-wider">
+                    {month && month !== "all" ? `${monthLabelFromKey(month)} Toplamı` : "Toplam"}
+                  </TableCell>
                   <TableCell className={`text-right font-extrabold text-lg ${totalColor}`} data-testid={`${testIdPrefix}-total`}>
                     {formatTRY(total)}
                   </TableCell>
                   <TableCell />
                 </TableRow>
+                {month && month !== "all" && grandTotal !== total && (
+                  <TableRow className="bg-slate-50/50">
+                    <TableCell colSpan={3} className="font-semibold text-slate-500 uppercase text-xs tracking-wider">
+                      Tüm Zamanlar Toplamı
+                    </TableCell>
+                    <TableCell className="text-right font-bold text-slate-700">
+                      {formatTRY(grandTotal)}
+                    </TableCell>
+                    <TableCell />
+                  </TableRow>
+                )}
               </TableFooter>
             )}
           </Table>

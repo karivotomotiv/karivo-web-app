@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Request, BackgroundTasks, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -102,7 +102,7 @@ async def log_activity(user: dict, action: str, section: str, details: str = "")
 # Models
 # -----------------------------
 class LoginIn(BaseModel):
-    email: EmailStr
+    email: str
     password: str
 
 class UserOut(BaseModel):
@@ -876,6 +876,177 @@ async def list_recipients(user: dict = Depends(get_current_user)):
 
 
 # -----------------------------
+# Monthly Report (Cron)
+# -----------------------------
+def _render_monthly_report_email(user_name: str, month_label: str, totals: dict, top_items: dict) -> str:
+    tr = lambda n: f"₺{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    rows_inc = "".join(
+        f'<tr><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">{escape(x["description"])}</td>'
+        f'<td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right">{tr(x["amount"])}</td></tr>'
+        for x in top_items["incomes"]
+    ) or '<tr><td colspan="2" style="padding:12px;text-align:center;color:#94a3b8">Kayıt yok</td></tr>'
+    rows_exp = "".join(
+        f'<tr><td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">{escape(x["description"])}</td>'
+        f'<td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right">{tr(x["amount"])}</td></tr>'
+        for x in top_items["expenses"]
+    ) or '<tr><td colspan="2" style="padding:12px;text-align:center;color:#94a3b8">Kayıt yok</td></tr>'
+
+    profit = totals["income"] - totals["expense"]
+    profit_color = "#059669" if profit >= 0 else "#dc2626"
+    return (
+        f'<table role="presentation" width="100%" style="background:#f8fafc;padding:24px"><tr><td align="center">'
+        f'<table role="presentation" width="640" style="background:#ffffff;border-radius:12px;padding:32px;font-family:Arial,sans-serif;color:#0f172a">'
+        f'<tr><td>'
+        f'<h2 style="margin:0 0 4px 0">Aylık Rapor — {escape(month_label)}</h2>'
+        f'<p style="color:#64748b;margin:0 0 24px 0">Merhaba {escape(user_name)}, önceki ayın finansal özeti aşağıdadır.</p>'
+        # KPI cards
+        f'<table role="presentation" width="100%" style="margin-bottom:24px"><tr>'
+        f'<td style="padding:12px;background:#ecfdf5;border-radius:8px;width:33%"><div style="font-size:11px;color:#047857;text-transform:uppercase;letter-spacing:1px">Gelir</div><div style="font-size:20px;font-weight:800;color:#065f46">{tr(totals["income"])}</div></td>'
+        f'<td style="width:8px"></td>'
+        f'<td style="padding:12px;background:#fef2f2;border-radius:8px;width:33%"><div style="font-size:11px;color:#b91c1c;text-transform:uppercase;letter-spacing:1px">Gider</div><div style="font-size:20px;font-weight:800;color:#991b1b">{tr(totals["expense"])}</div></td>'
+        f'<td style="width:8px"></td>'
+        f'<td style="padding:12px;background:#eef2ff;border-radius:8px;width:33%"><div style="font-size:11px;color:#4338ca;text-transform:uppercase;letter-spacing:1px">KDV</div><div style="font-size:20px;font-weight:800;color:#3730a3">{tr(totals["vat"])}</div></td>'
+        f'</tr></table>'
+        f'<table role="presentation" width="100%" style="margin-bottom:24px"><tr>'
+        f'<td style="padding:12px;background:#f1f5f9;border-radius:8px"><div style="font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:1px">Fatura Toplamı (KDV Dahil)</div><div style="font-size:16px;font-weight:700">{tr(totals["invoice"])}</div></td>'
+        f'<td style="width:8px"></td>'
+        f'<td style="padding:12px;background:#f1f5f9;border-radius:8px"><div style="font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:1px">Net Kâr</div><div style="font-size:16px;font-weight:800;color:{profit_color}">{tr(profit)}</div></td>'
+        f'</tr></table>'
+        # Top items
+        f'<h3 style="margin:16px 0 8px 0;font-size:14px;text-transform:uppercase;letter-spacing:1px;color:#475569">En Büyük 5 Gelir</h3>'
+        f'<table role="presentation" width="100%" style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden">{rows_inc}</table>'
+        f'<h3 style="margin:20px 0 8px 0;font-size:14px;text-transform:uppercase;letter-spacing:1px;color:#475569">En Büyük 5 Gider</h3>'
+        f'<table role="presentation" width="100%" style="border-collapse:collapse;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden">{rows_exp}</table>'
+        f'<p style="color:#64748b;font-size:12px;margin-top:28px">Bu rapor {escape(EMAIL_FROM_NAME)} tarafından otomatik olarak her ayın 1\'inde gönderilir. Detaylı veriler için uygulamanızda oturum açın.</p>'
+        f'</td></tr></table></td></tr></table>'
+    )
+
+
+async def _previous_month_range() -> tuple[str, str, str]:
+    """(start_iso, end_iso, label) tuple'ını döner — önceki ay."""
+    now = datetime.now(timezone.utc)
+    first_this_month = now.replace(day=1)
+    last_prev = first_this_month - timedelta(days=1)
+    first_prev = last_prev.replace(day=1)
+    start = first_prev.strftime("%Y-%m-%d")
+    end = last_prev.strftime("%Y-%m-%d")
+    label = first_prev.strftime("%Y-%m")
+    return start, end, label
+
+
+async def _collect_monthly_report() -> dict:
+    """Önceki ayın verilerini toplar."""
+    start, end, label = await _previous_month_range()
+    inc = await db.incomes.find({"date": {"$gte": start, "$lte": end}}, {"_id": 0}).to_list(10000)
+    exp = await db.expenses.find({"date": {"$gte": start, "$lte": end}}, {"_id": 0}).to_list(10000)
+    invs = await db.invoices.find({"date": {"$gte": start, "$lte": end}}, {"_id": 0}).to_list(10000)
+    totals = {
+        "income": round(sum(float(x.get("amount", 0)) for x in inc), 2),
+        "expense": round(sum(float(x.get("amount", 0)) for x in exp), 2),
+        "invoice": round(sum(float(x.get("amount", 0)) for x in invs), 2),
+        "vat": round(sum(float(x.get("vat_amount", 0)) for x in invs), 2),
+    }
+    top = {
+        "incomes": sorted(inc, key=lambda x: float(x.get("amount", 0)), reverse=True)[:5],
+        "expenses": sorted(exp, key=lambda x: float(x.get("amount", 0)), reverse=True)[:5],
+    }
+    month_label = datetime.strptime(label, "%Y-%m").strftime("%B %Y")
+    # Türkçe ay isimleri
+    tr_months = {
+        "January": "Ocak", "February": "Şubat", "March": "Mart", "April": "Nisan",
+        "May": "Mayıs", "June": "Haziran", "July": "Temmuz", "August": "Ağustos",
+        "September": "Eylül", "October": "Ekim", "November": "Kasım", "December": "Aralık",
+    }
+    for en, tr in tr_months.items():
+        month_label = month_label.replace(en, tr)
+    return {"totals": totals, "top": top, "month_label": month_label, "range": {"start": start, "end": end}}
+
+
+async def _run_monthly_report_task() -> None:
+    """Background task: önceki ay raporunu toplar, her kullanıcıya e-posta gönderir."""
+    try:
+        report = await _collect_monthly_report()
+        users_ = await db.users.find({}, {"_id": 0, "email": 1, "name": 1, "notification_email": 1}).to_list(10)
+        subject = f"Aylık Rapor — {report['month_label']}"
+        sent, failed = 0, 0
+        for u in users_:
+            to = u.get("notification_email") or u["email"]
+            try:
+                html = _render_monthly_report_email(u["name"], report["month_label"], report["totals"], report["top"])
+                await send_email(to=to, subject=subject, html=html)
+                sent += 1
+            except Exception as e:
+                logger.error(f"Monthly report send failed to {to}: {e}")
+                failed += 1
+        # Audit log (sistem olarak)
+        await db.activity_logs.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": "system",
+            "user_name": "Sistem (Cron)",
+            "action": "email",
+            "section": "Rapor",
+            "details": f"Aylık rapor ({report['month_label']}) gönderildi: {sent} başarılı, {failed} başarısız",
+            "timestamp": now_iso(),
+        })
+        logger.info(f"Monthly report done: sent={sent} failed={failed}")
+    except Exception:
+        logger.exception("Monthly report task error")
+
+
+# Processed webhook ids (idempotency, in-memory for current pod)
+_processed_webhooks: set = set()
+
+
+@api_router.post("/cron/monthly-report")
+async def cron_monthly_report(
+    background: BackgroundTasks,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    x_webhook_id: Optional[str] = Header(None),
+):
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    import hmac
+    expected = os.environ.get("WEBHOOK_CRON_SECRET", "")
+    if not expected or not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    token = authorization[7:]
+    if not hmac.compare_digest(token, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Parse envelope (best effort)
+    try:
+        envelope = await request.json()
+    except Exception:
+        envelope = {}
+    run_id = x_webhook_id or envelope.get("run_id") or str(uuid.uuid4())
+
+    # Idempotency
+    if run_id in _processed_webhooks:
+        return {"ok": True, "duplicate": True, "run_id": run_id}
+    _processed_webhooks.add(run_id)
+    if len(_processed_webhooks) > 500:
+        _processed_webhooks.pop()
+
+    # Hand off
+    background.add_task(_run_monthly_report_task)
+    return {"ok": True, "run_id": run_id, "queued": "monthly-report"}
+
+
+@api_router.post("/reports/monthly/send-now")
+async def send_monthly_report_now(background: BackgroundTasks, user: dict = Depends(get_current_user)):
+    """Kullanıcı tarafından tetiklenen aylık rapor gönderimi (test/anında gönderim)."""
+    background.add_task(_run_monthly_report_task)
+    await log_activity(user, "email", "Rapor", "Aylık rapor manuel olarak kuyruğa alındı")
+    return {"ok": True, "queued": True}
+
+
+@api_router.get("/reports/monthly/preview")
+async def preview_monthly_report(user: dict = Depends(get_current_user)):
+    """Aylık rapor önizlemesi (önceki ay)."""
+    return await _collect_monthly_report()
+
+
+# -----------------------------
 # Monthly trend (dashboard chart)
 # -----------------------------
 @api_router.get("/dashboard/monthly-trend")
@@ -1100,7 +1271,7 @@ async def startup_event():
     await db.expenses.create_index("date")
     await db.invoices.create_index("date")
 
-    # İki kullanıcıyı seed et
+    # İki kullanıcıyı seed et (user_key üzerinden migration)
     seed_users = [
         {
             "email": os.environ["USER1_EMAIL"].lower(),
@@ -1117,8 +1288,19 @@ async def startup_event():
             "user_key": "user2",
         },
     ]
+
+    # Eski kullanıcıları temizle: user_key henüz yoksa bile email .env'dekiyle uyuşmayanları sil
+    valid_emails = {u["email"] for u in seed_users}
+    valid_keys = {u["user_key"] for u in seed_users}
+    await db.users.delete_many({
+        "email": {"$nin": list(valid_emails)},
+        "user_key": {"$nin": list(valid_keys)},
+    })
+
     for u in seed_users:
-        existing = await db.users.find_one({"email": u["email"]})
+        existing = await db.users.find_one({"user_key": u["user_key"]})
+        if existing is None:
+            existing = await db.users.find_one({"email": u["email"]})
         if existing is None:
             doc = {
                 "id": str(uuid.uuid4()),
@@ -1132,13 +1314,12 @@ async def startup_event():
             await db.users.insert_one(doc)
             logger.info(f"Seeded user: {u['email']}")
         else:
-            # .env değişmişse hash'i güncelle
-            if not verify_password(u["password"], existing["password_hash"]):
-                await db.users.update_one(
-                    {"email": u["email"]},
-                    {"$set": {"password_hash": hash_password(u["password"]), "name": u["name"], "user_key": u["user_key"]}},
-                )
-                logger.info(f"Updated password/name for: {u['email']}")
+            # Email/isim/şifre .env'den güncellenmişse eşitle
+            update = {"user_key": u["user_key"], "email": u["email"], "name": u["name"], "role": u["role"]}
+            if not verify_password(u["password"], existing.get("password_hash", "")):
+                update["password_hash"] = hash_password(u["password"])
+            await db.users.update_one({"id": existing["id"]}, {"$set": update})
+            logger.info(f"Updated user ({u['user_key']}): {u['email']}")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

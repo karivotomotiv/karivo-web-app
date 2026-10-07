@@ -9,8 +9,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Building2, Lock } from "lucide-react";
 
 const DEMO_USERS = [
-  { name: "Ahmet (Kullanıcı 1)", email: "ahmet@sirket.com", password: "Ahmet2026!" },
-  { name: "Ayşe (Kullanıcı 2)", email: "ayse@sirket.com", password: "Ayse2026!" },
+  { name: "Murat", email: "murat@karivo.local", password: "Murat2026!" },
+  { name: "Özkan", email: "ozkan@karivo.local", password: "Ozkan2026!" },
 ];
 
 export default function Login() {
@@ -50,7 +50,7 @@ export default function Login() {
             <Building2 className="w-7 h-7" />
           </div>
           <CardTitle className="text-2xl font-extrabold tracking-tight text-slate-900">
-            Şirket Yönetim
+            Karivo Otomotiv
           </CardTitle>
           <CardDescription className="text-slate-600">
             Gelir, gider, stok ve görev takibi için hesabınıza giriş yapın.

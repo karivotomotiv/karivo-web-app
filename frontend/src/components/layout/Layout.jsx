@@ -52,8 +52,8 @@ export default function Layout() {
               <Building2 className="w-5 h-5" />
             </div>
             <div className="flex flex-col">
-              <span className="text-sm font-extrabold tracking-tight text-slate-900">Şirket Yönetim</span>
-              <span className="text-xs text-slate-500">v1.0</span>
+              <span className="text-sm font-extrabold tracking-tight text-slate-900">Karivo Otomotiv</span>
+              <span className="text-xs text-slate-500">Yönetim Paneli</span>
             </div>
           </div>
         </div>
@@ -120,7 +120,7 @@ export default function Layout() {
         <div className="sticky top-0 z-10 backdrop-blur-md bg-white/90 border-b border-slate-200 px-8 py-4">
           <div className="flex items-center justify-between">
             <h1 className="text-xl font-extrabold tracking-tight text-slate-900">
-              Küçük Şirket Yönetim Paneli
+              Karivo Otomotiv — Yönetim Paneli
             </h1>
             <div className="text-sm text-slate-500">{new Date().toLocaleDateString("tr-TR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div>
           </div>
