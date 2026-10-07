@@ -15,6 +15,7 @@ import {
   Building2,
   LayoutDashboard,
   Settings,
+  Users,
 } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 
@@ -22,6 +23,7 @@ const NAV = [
   { to: "/", label: "Özet", icon: LayoutDashboard, testId: "nav-dashboard", end: true },
   { to: "/gelirler", label: "Gelirler", icon: TrendingUp, testId: "nav-gelirler" },
   { to: "/giderler", label: "Giderler", icon: TrendingDown, testId: "nav-giderler" },
+  { to: "/cariler", label: "Cariler", icon: Users, testId: "nav-cariler" },
   { to: "/faturalar", label: "Faturalar", icon: FileText, testId: "nav-faturalar" },
   { to: "/stok", label: "Stok", icon: Package, testId: "nav-stok" },
   { to: "/harcamalar", label: "Harcamalar", icon: Wallet, testId: "nav-harcamalar" },

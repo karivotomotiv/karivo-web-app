@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableFooter } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Plus, Pencil, Trash2, TrendingUp, TrendingDown, Download } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 
 /**
@@ -16,17 +17,19 @@ import { toast } from "sonner";
  */
 export default function AmountList({ title, subtitle, endpoint, color = "emerald", testIdPrefix }) {
   const [items, setItems] = useState([]);
+  const [cariler, setCariler] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ description: "", amount: "", date: "" });
+  const [form, setForm] = useState({ description: "", amount: "", date: "", cari_id: "" });
   const [loading, setLoading] = useState(false);
   const [month, setMonth] = useState("all");
   const [search, setSearch] = useState("");
 
   const load = async () => {
     try {
-      const { data } = await api.get(`/${endpoint}`);
-      setItems(data);
+      const [a, b] = await Promise.all([api.get(`/${endpoint}`), api.get("/cariler")]);
+      setItems(a.data);
+      setCariler(b.data);
     } catch (e) {
       toast.error(extractError(e));
     }
@@ -40,12 +43,12 @@ export default function AmountList({ title, subtitle, endpoint, color = "emerald
 
   const openNew = () => {
     setEditing(null);
-    setForm({ description: "", amount: "", date: new Date().toISOString().slice(0, 10) });
+    setForm({ description: "", amount: "", date: new Date().toISOString().slice(0, 10), cari_id: "" });
     setOpen(true);
   };
   const openEdit = (item) => {
     setEditing(item);
-    setForm({ description: item.description, amount: String(item.amount), date: item.date });
+    setForm({ description: item.description, amount: String(item.amount), date: item.date, cari_id: item.cari_id || "" });
     setOpen(true);
   };
 
@@ -57,7 +60,12 @@ export default function AmountList({ title, subtitle, endpoint, color = "emerald
     }
     setLoading(true);
     try {
-      const payload = { description: form.description.trim(), amount: Number(form.amount), date: form.date || null };
+      const payload = {
+        description: form.description.trim(),
+        amount: Number(form.amount),
+        date: form.date || null,
+        cari_id: form.cari_id || null,
+      };
       if (editing) {
         await api.put(`/${endpoint}/${editing.id}`, payload);
         toast.success("Kayıt güncellendi");
@@ -163,7 +171,14 @@ export default function AmountList({ title, subtitle, endpoint, color = "emerald
               {filtered.map((it) => (
                 <TableRow key={it.id} data-testid={`${testIdPrefix}-row-${it.id}`}>
                   <TableCell className="text-slate-700">{formatDate(it.date)}</TableCell>
-                  <TableCell className="font-medium text-slate-900">{it.description}</TableCell>
+                  <TableCell className="font-medium text-slate-900">
+                    {it.description}
+                    {it.cari_name && (
+                      <span className="ml-2 inline-flex items-center text-xs font-semibold px-2 py-0.5 rounded-full bg-sky-100 text-sky-700">
+                        {it.cari_name}
+                      </span>
+                    )}
+                  </TableCell>
                   <TableCell className="text-slate-500 text-sm">{it.created_by_name}</TableCell>
                   <TableCell className="text-right font-semibold text-slate-900">{formatTRY(it.amount)}</TableCell>
                   <TableCell className="text-right">
@@ -226,6 +241,26 @@ export default function AmountList({ title, subtitle, endpoint, color = "emerald
                 <Label htmlFor="date">Tarih</Label>
                 <Input id="date" type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} data-testid={`${testIdPrefix}-form-date`} />
               </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="cari">Cari (opsiyonel)</Label>
+              <Select
+                value={form.cari_id || "none"}
+                onValueChange={(v) => setForm({ ...form, cari_id: v === "none" ? "" : v })}
+              >
+                <SelectTrigger data-testid={`${testIdPrefix}-form-cari`}>
+                  <SelectValue placeholder="Cari seçin..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Cari seçilmedi</SelectItem>
+                  {cariler.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {cariler.length === 0 && (
+                <p className="text-xs text-slate-500">Henüz cari yok. "Cariler" bölümünden ekleyebilirsiniz.</p>
+              )}
             </div>
             <DialogFooter className="gap-2">
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>İptal</Button>

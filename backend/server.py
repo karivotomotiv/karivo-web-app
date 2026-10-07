@@ -115,23 +115,27 @@ class IncomeIn(BaseModel):
     description: str
     amount: float
     date: Optional[str] = None  # ISO date; auto if missing
+    cari_id: Optional[str] = None
 
 class IncomeOut(IncomeIn):
     id: str
     created_by: str
     created_by_name: str
     created_at: str
+    cari_name: Optional[str] = None
 
 class ExpenseIn(BaseModel):
     description: str
     amount: float
     date: Optional[str] = None
+    cari_id: Optional[str] = None
 
 class ExpenseOut(ExpenseIn):
     id: str
     created_by: str
     created_by_name: str
     created_at: str
+    cari_name: Optional[str] = None
 
 class InvoiceIn(BaseModel):
     description: str
@@ -234,6 +238,13 @@ def _resolve_date(d: Optional[str]) -> str:
         return d
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+async def _resolve_cari_name(cari_id: Optional[str]) -> Optional[str]:
+    if not cari_id:
+        return None
+    doc = await db.cariler.find_one({"id": cari_id}, {"_id": 0, "name": 1})
+    return doc["name"] if doc else None
+
+
 # ---- Gelirler ----
 @api_router.get("/incomes", response_model=List[IncomeOut])
 async def list_incomes(user: dict = Depends(get_current_user)):
@@ -242,23 +253,33 @@ async def list_incomes(user: dict = Depends(get_current_user)):
 
 @api_router.post("/incomes", response_model=IncomeOut)
 async def create_income(data: IncomeIn, user: dict = Depends(get_current_user)):
+    cari_name = await _resolve_cari_name(data.cari_id)
     doc = {
         "id": str(uuid.uuid4()),
         "description": data.description,
         "amount": float(data.amount),
         "date": _resolve_date(data.date),
+        "cari_id": data.cari_id,
+        "cari_name": cari_name,
         "created_by": user["id"],
         "created_by_name": user["name"],
         "created_at": now_iso(),
     }
     await db.incomes.insert_one(doc)
-    await log_activity(user, "create", "Gelirler", f"{doc['description']} / {doc['amount']}₺")
+    extra = f" ({cari_name})" if cari_name else ""
+    await log_activity(user, "create", "Gelirler", f"{doc['description']} / {doc['amount']}₺{extra}")
     doc.pop("_id", None)
     return doc
 
 @api_router.put("/incomes/{item_id}", response_model=IncomeOut)
 async def update_income(item_id: str, data: IncomeIn, user: dict = Depends(get_current_user)):
-    update = {"description": data.description, "amount": float(data.amount)}
+    cari_name = await _resolve_cari_name(data.cari_id)
+    update = {
+        "description": data.description,
+        "amount": float(data.amount),
+        "cari_id": data.cari_id,
+        "cari_name": cari_name,
+    }
     if data.date:
         update["date"] = data.date
     res = await db.incomes.find_one_and_update({"id": item_id}, {"$set": update}, return_document=True)
@@ -284,23 +305,33 @@ async def list_expenses(user: dict = Depends(get_current_user)):
 
 @api_router.post("/expenses", response_model=ExpenseOut)
 async def create_expense(data: ExpenseIn, user: dict = Depends(get_current_user)):
+    cari_name = await _resolve_cari_name(data.cari_id)
     doc = {
         "id": str(uuid.uuid4()),
         "description": data.description,
         "amount": float(data.amount),
         "date": _resolve_date(data.date),
+        "cari_id": data.cari_id,
+        "cari_name": cari_name,
         "created_by": user["id"],
         "created_by_name": user["name"],
         "created_at": now_iso(),
     }
     await db.expenses.insert_one(doc)
-    await log_activity(user, "create", "Giderler", f"{doc['description']} / {doc['amount']}₺")
+    extra = f" ({cari_name})" if cari_name else ""
+    await log_activity(user, "create", "Giderler", f"{doc['description']} / {doc['amount']}₺{extra}")
     doc.pop("_id", None)
     return doc
 
 @api_router.put("/expenses/{item_id}", response_model=ExpenseOut)
 async def update_expense(item_id: str, data: ExpenseIn, user: dict = Depends(get_current_user)):
-    update = {"description": data.description, "amount": float(data.amount)}
+    cari_name = await _resolve_cari_name(data.cari_id)
+    update = {
+        "description": data.description,
+        "amount": float(data.amount),
+        "cari_id": data.cari_id,
+        "cari_name": cari_name,
+    }
     if data.date:
         update["date"] = data.date
     res = await db.expenses.find_one_and_update({"id": item_id}, {"$set": update})
@@ -570,6 +601,180 @@ async def delete_inventory(item_id: str, user: dict = Depends(get_current_user))
     await db.inventory.delete_one({"id": item_id})
     await log_activity(user, "delete", "Stok", f"{doc.get('product_name','')}")
     return {"ok": True}
+
+# ---- Cariler ----
+CariType = Literal["alacak", "borc"]  # alacak = bize borçlu, borc = biz borçluyuz
+
+
+class CariIn(BaseModel):
+    name: str
+    phone: Optional[str] = ""
+    address: Optional[str] = ""
+    note: Optional[str] = ""
+
+
+class CariOut(BaseModel):
+    id: str
+    name: str
+    phone: str
+    address: str
+    note: str
+    total_alacak: float = 0.0
+    total_borc: float = 0.0
+    net: float = 0.0
+    tx_count: int = 0
+    created_by: str
+    created_by_name: str
+    created_at: str
+
+
+class CariTxIn(BaseModel):
+    type: CariType
+    amount: float
+    description: Optional[str] = ""
+    date: Optional[str] = None
+
+
+class CariTxOut(CariTxIn):
+    id: str
+    cari_id: str
+    created_by: str
+    created_by_name: str
+    created_at: str
+
+
+async def _attach_cari_totals(cari_doc: dict) -> dict:
+    txs = await db.cari_transactions.find({"cari_id": cari_doc["id"]}, {"_id": 0, "type": 1, "amount": 1}).to_list(5000)
+    alacak = sum(float(t["amount"]) for t in txs if t["type"] == "alacak")
+    borc = sum(float(t["amount"]) for t in txs if t["type"] == "borc")
+    cari_doc["total_alacak"] = round(alacak, 2)
+    cari_doc["total_borc"] = round(borc, 2)
+    cari_doc["net"] = round(alacak - borc, 2)
+    cari_doc["tx_count"] = len(txs)
+    return cari_doc
+
+
+@api_router.get("/cariler", response_model=List[CariOut])
+async def list_cariler(user: dict = Depends(get_current_user)):
+    docs = await db.cariler.find({}, {"_id": 0}).sort("name", 1).to_list(5000)
+    for d in docs:
+        await _attach_cari_totals(d)
+    return docs
+
+
+@api_router.post("/cariler", response_model=CariOut)
+async def create_cari(data: CariIn, user: dict = Depends(get_current_user)):
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": data.name.strip(),
+        "phone": (data.phone or "").strip(),
+        "address": (data.address or "").strip(),
+        "note": (data.note or "").strip(),
+        "created_by": user["id"],
+        "created_by_name": user["name"],
+        "created_at": now_iso(),
+    }
+    await db.cariler.insert_one(doc)
+    doc.pop("_id", None)
+    await _attach_cari_totals(doc)
+    await log_activity(user, "create", "Cariler", f"{doc['name']}")
+    return doc
+
+
+@api_router.get("/cariler/{cari_id}", response_model=CariOut)
+async def get_cari(cari_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.cariler.find_one({"id": cari_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Cari bulunamadı")
+    await _attach_cari_totals(doc)
+    return doc
+
+
+@api_router.put("/cariler/{cari_id}", response_model=CariOut)
+async def update_cari(cari_id: str, data: CariIn, user: dict = Depends(get_current_user)):
+    update = {
+        "name": data.name.strip(),
+        "phone": (data.phone or "").strip(),
+        "address": (data.address or "").strip(),
+        "note": (data.note or "").strip(),
+    }
+    res = await db.cariler.find_one_and_update({"id": cari_id}, {"$set": update})
+    if not res:
+        raise HTTPException(404, "Cari bulunamadı")
+    await log_activity(user, "update", "Cariler", f"{update['name']}")
+    doc = await db.cariler.find_one({"id": cari_id}, {"_id": 0})
+    await _attach_cari_totals(doc)
+    return doc
+
+
+@api_router.delete("/cariler/{cari_id}")
+async def delete_cari(cari_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.cariler.find_one({"id": cari_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Cari bulunamadı")
+    await db.cariler.delete_one({"id": cari_id})
+    await db.cari_transactions.delete_many({"cari_id": cari_id})
+    await log_activity(user, "delete", "Cariler", f"{doc.get('name', '')}")
+    return {"ok": True}
+
+
+@api_router.get("/cariler/{cari_id}/transactions", response_model=List[CariTxOut])
+async def list_cari_tx(cari_id: str, user: dict = Depends(get_current_user)):
+    exists = await db.cariler.find_one({"id": cari_id}, {"_id": 0, "id": 1})
+    if not exists:
+        raise HTTPException(404, "Cari bulunamadı")
+    return await db.cari_transactions.find({"cari_id": cari_id}, {"_id": 0}).sort("date", -1).to_list(5000)
+
+
+@api_router.post("/cariler/{cari_id}/transactions", response_model=CariTxOut)
+async def create_cari_tx(cari_id: str, data: CariTxIn, user: dict = Depends(get_current_user)):
+    cari = await db.cariler.find_one({"id": cari_id}, {"_id": 0, "name": 1})
+    if not cari:
+        raise HTTPException(404, "Cari bulunamadı")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "cari_id": cari_id,
+        "type": data.type,
+        "amount": float(data.amount),
+        "description": (data.description or "").strip(),
+        "date": _resolve_date(data.date),
+        "created_by": user["id"],
+        "created_by_name": user["name"],
+        "created_at": now_iso(),
+    }
+    await db.cari_transactions.insert_one(doc)
+    doc.pop("_id", None)
+    tr_type = "Alacak" if data.type == "alacak" else "Borç"
+    await log_activity(user, "create", "Cariler", f"{cari['name']} — {tr_type}: {doc['amount']}₺")
+    return doc
+
+
+@api_router.put("/cariler/{cari_id}/transactions/{tx_id}", response_model=CariTxOut)
+async def update_cari_tx(cari_id: str, tx_id: str, data: CariTxIn, user: dict = Depends(get_current_user)):
+    update = {
+        "type": data.type,
+        "amount": float(data.amount),
+        "description": (data.description or "").strip(),
+    }
+    if data.date:
+        update["date"] = data.date
+    res = await db.cari_transactions.find_one_and_update({"id": tx_id, "cari_id": cari_id}, {"$set": update})
+    if not res:
+        raise HTTPException(404, "Hareket bulunamadı")
+    cari = await db.cariler.find_one({"id": cari_id}, {"_id": 0, "name": 1})
+    await log_activity(user, "update", "Cariler", f"{cari['name']} hareket güncellendi")
+    return await db.cari_transactions.find_one({"id": tx_id}, {"_id": 0})
+
+
+@api_router.delete("/cariler/{cari_id}/transactions/{tx_id}")
+async def delete_cari_tx(cari_id: str, tx_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.cari_transactions.find_one({"id": tx_id, "cari_id": cari_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Hareket bulunamadı")
+    await db.cari_transactions.delete_one({"id": tx_id})
+    await log_activity(user, "delete", "Cariler", f"Hareket silindi: {doc.get('amount', 0)}₺")
+    return {"ok": True}
+
 
 # ---- Harcamalar ----
 @api_router.get("/spendings", response_model=List[SpendingOut])
@@ -1058,6 +1263,7 @@ async def monthly_trend(user: dict = Depends(get_current_user)):
     incomes = await db.incomes.find({}, {"_id": 0, "date": 1, "amount": 1}).to_list(10000)
     expenses = await db.expenses.find({}, {"_id": 0, "date": 1, "amount": 1}).to_list(10000)
     invoices = await db.invoices.find({}, {"_id": 0, "date": 1, "amount": 1, "vat_amount": 1}).to_list(10000)
+    cari_txs = await db.cari_transactions.find({}, {"_id": 0, "date": 1, "type": 1, "amount": 1}).to_list(10000)
 
     buckets: dict = {}
     for row in incomes:
@@ -1074,6 +1280,15 @@ async def monthly_trend(user: dict = Depends(get_current_user)):
             b = buckets.setdefault(m, {"month": m, "income": 0, "expense": 0, "invoice": 0, "vat": 0})
             b["invoice"] += float(row.get("amount", 0))
             b["vat"] += float(row.get("vat_amount", 0))
+    for row in cari_txs:
+        m = _month(row.get("date"))
+        if not m:
+            continue
+        b = buckets.setdefault(m, {"month": m, "income": 0, "expense": 0, "invoice": 0, "vat": 0})
+        if row.get("type") == "alacak":
+            b["income"] += float(row.get("amount", 0))
+        else:
+            b["expense"] += float(row.get("amount", 0))
 
     rows = []
     for m in sorted(buckets.keys()):
@@ -1239,13 +1454,22 @@ async def list_logs(limit: int = 500, user: dict = Depends(get_current_user)):
 async def summary(user: dict = Depends(get_current_user)):
     inc = await db.incomes.find({}, {"_id": 0, "amount": 1}).to_list(5000)
     exp = await db.expenses.find({}, {"_id": 0, "amount": 1}).to_list(5000)
-    inv = await db.invoices.find({}, {"_id": 0, "amount": 1, "vat_amount": 1}).to_list(5000)
+    invs = await db.invoices.find({}, {"_id": 0, "amount": 1, "vat_amount": 1}).to_list(5000)
     todos = await db.todos.find({"completed": False}, {"_id": 0, "id": 1}).to_list(5000)
+    cari_tx = await db.cari_transactions.find({}, {"_id": 0, "type": 1, "amount": 1}).to_list(10000)
+    cari_alacak = sum(float(t["amount"]) for t in cari_tx if t["type"] == "alacak")
+    cari_borc = sum(float(t["amount"]) for t in cari_tx if t["type"] == "borc")
+    base_income = sum(d["amount"] for d in inc)
+    base_expense = sum(d["amount"] for d in exp)
     return {
-        "total_income": round(sum(d["amount"] for d in inc), 2),
-        "total_expense": round(sum(d["amount"] for d in exp), 2),
-        "total_invoices": round(sum(d["amount"] for d in inv), 2),
-        "total_vat": round(sum(d.get("vat_amount", 0) for d in inv), 2),
+        "total_income": round(base_income + cari_alacak, 2),
+        "total_expense": round(base_expense + cari_borc, 2),
+        "total_income_direct": round(base_income, 2),
+        "total_expense_direct": round(base_expense, 2),
+        "cari_alacak": round(cari_alacak, 2),
+        "cari_borc": round(cari_borc, 2),
+        "total_invoices": round(sum(d["amount"] for d in invs), 2),
+        "total_vat": round(sum(d.get("vat_amount", 0) for d in invs), 2),
         "open_todos": len(todos),
     }
 

@@ -10,6 +10,8 @@ import Stok from "@/pages/Stok";
 import Harcamalar from "@/pages/Harcamalar";
 import Yapilacaklar from "@/pages/Yapilacaklar";
 import ActivityLog from "@/pages/ActivityLog";
+import Cariler from "@/pages/Cariler";
+import CariDetail from "@/pages/CariDetail";
 import "@/App.css";
 
 export default function App() {
@@ -22,6 +24,8 @@ export default function App() {
             <Route index element={<Dashboard />} />
             <Route path="gelirler" element={<Gelirler />} />
             <Route path="giderler" element={<Giderler />} />
+            <Route path="cariler" element={<Cariler />} />
+            <Route path="cariler/:id" element={<CariDetail />} />
             <Route path="faturalar" element={<Faturalar />} />
             <Route path="stok" element={<Stok />} />
             <Route path="harcamalar" element={<Harcamalar />} />
