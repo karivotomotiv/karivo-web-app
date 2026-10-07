@@ -603,7 +603,7 @@ async def delete_inventory(item_id: str, user: dict = Depends(get_current_user))
     return {"ok": True}
 
 # ---- Cariler ----
-CariType = Literal["alacak", "borc"]  # alacak = bize borçlu, borc = biz borçluyuz
+CariType = Literal["alacak", "borc", "odeme"]  # alacak = bize borçlu, borc = biz borçluyuz, odeme = gelen ödeme (alacaktan düşer)
 
 
 class CariIn(BaseModel):
@@ -621,6 +621,8 @@ class CariOut(BaseModel):
     note: str
     total_alacak: float = 0.0
     total_borc: float = 0.0
+    total_odeme: float = 0.0
+    remaining_alacak: float = 0.0
     net: float = 0.0
     tx_count: int = 0
     created_by: str
@@ -647,9 +649,13 @@ async def _attach_cari_totals(cari_doc: dict) -> dict:
     txs = await db.cari_transactions.find({"cari_id": cari_doc["id"]}, {"_id": 0, "type": 1, "amount": 1}).to_list(5000)
     alacak = sum(float(t["amount"]) for t in txs if t["type"] == "alacak")
     borc = sum(float(t["amount"]) for t in txs if t["type"] == "borc")
+    odeme = sum(float(t["amount"]) for t in txs if t["type"] == "odeme")
+    remaining_alacak = alacak - odeme
     cari_doc["total_alacak"] = round(alacak, 2)
     cari_doc["total_borc"] = round(borc, 2)
-    cari_doc["net"] = round(alacak - borc, 2)
+    cari_doc["total_odeme"] = round(odeme, 2)
+    cari_doc["remaining_alacak"] = round(remaining_alacak, 2)
+    cari_doc["net"] = round(remaining_alacak - borc, 2)
     cari_doc["tx_count"] = len(txs)
     return cari_doc
 
@@ -744,7 +750,8 @@ async def create_cari_tx(cari_id: str, data: CariTxIn, user: dict = Depends(get_
     }
     await db.cari_transactions.insert_one(doc)
     doc.pop("_id", None)
-    tr_type = "Alacak" if data.type == "alacak" else "Borç"
+    tr_type_map = {"alacak": "Alacak", "borc": "Borç", "odeme": "Gelen Ödeme"}
+    tr_type = tr_type_map.get(data.type, data.type)
     await log_activity(user, "create", "Cariler", f"{cari['name']} — {tr_type}: {doc['amount']}₺")
     return doc
 

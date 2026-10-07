@@ -8,8 +8,20 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableFooter } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { ArrowLeft, Plus, Pencil, Trash2, TrendingUp, TrendingDown, Users, Phone, MapPin } from "lucide-react";
+import { ArrowLeft, Plus, Pencil, Trash2, TrendingUp, TrendingDown, Users, Phone, MapPin, HandCoins, Wallet } from "lucide-react";
 import { toast } from "sonner";
+
+const TYPE_META = {
+  alacak: { label: "Alacak", shortLabel: "ALACAK", color: "emerald", btnClass: "bg-emerald-600 hover:bg-emerald-700" },
+  borc:   { label: "Borç", shortLabel: "BORÇ", color: "rose", btnClass: "bg-rose-600 hover:bg-rose-700" },
+  odeme:  { label: "Gelen Ödeme", shortLabel: "ÖDEME", color: "sky", btnClass: "bg-sky-600 hover:bg-sky-700" },
+};
+
+const BADGE_CLASS = {
+  alacak: "bg-emerald-100 text-emerald-700",
+  borc: "bg-rose-100 text-rose-700",
+  odeme: "bg-sky-100 text-sky-700",
+};
 
 export default function CariDetail() {
   const { id } = useParams();
@@ -17,7 +29,6 @@ export default function CariDetail() {
   const [txs, setTxs] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [defaultType, setDefaultType] = useState("alacak");
   const [form, setForm] = useState({ type: "alacak", amount: "", description: "", date: "" });
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("all");
@@ -38,7 +49,6 @@ export default function CariDetail() {
 
   const openNew = (type = "alacak") => {
     setEditing(null);
-    setDefaultType(type);
     setForm({ type, amount: "", description: "", date: new Date().toISOString().slice(0, 10) });
     setOpen(true);
   };
@@ -64,7 +74,7 @@ export default function CariDetail() {
         toast.success("Hareket güncellendi");
       } else {
         await api.post(`/cariler/${id}/transactions`, payload);
-        toast.success(`${form.type === "alacak" ? "Alacak" : "Borç"} eklendi`);
+        toast.success(`${TYPE_META[form.type].label} eklendi`);
       }
       setOpen(false);
       load();
@@ -94,6 +104,9 @@ export default function CariDetail() {
   }
 
   const net = Number(cari.net || 0);
+  const alacakCount = txs.filter((t) => t.type === "alacak").length;
+  const borcCount = txs.filter((t) => t.type === "borc").length;
+  const odemeCount = txs.filter((t) => t.type === "odeme").length;
 
   return (
     <div className="space-y-6">
@@ -115,18 +128,21 @@ export default function CariDetail() {
             {cari.note && <p className="text-sm text-slate-600 mt-2 max-w-xl">{cari.note}</p>}
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Button onClick={() => openNew("alacak")} className="bg-emerald-600 hover:bg-emerald-700 text-white" data-testid="cari-add-alacak">
             <Plus className="w-4 h-4 mr-2" /> Alacak Ekle
           </Button>
           <Button onClick={() => openNew("borc")} className="bg-rose-600 hover:bg-rose-700 text-white" data-testid="cari-add-borc">
             <Plus className="w-4 h-4 mr-2" /> Borç Ekle
           </Button>
+          <Button onClick={() => openNew("odeme")} className="bg-sky-600 hover:bg-sky-700 text-white" data-testid="cari-add-odeme">
+            <HandCoins className="w-4 h-4 mr-2" /> Gelen Ödeme Gir
+          </Button>
         </div>
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card className="border-slate-200 shadow-sm">
           <CardContent className="p-5">
             <div className="flex items-start justify-between">
@@ -142,10 +158,10 @@ export default function CariDetail() {
           <CardContent className="p-5">
             <div className="flex items-start justify-between">
               <div>
-                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Toplam Borç</div>
-                <div className="mt-2 text-2xl font-extrabold text-rose-700" data-testid="cari-detail-borc">{formatTRY(cari.total_borc)}</div>
+                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Alınan Ödeme</div>
+                <div className="mt-2 text-2xl font-extrabold text-sky-700" data-testid="cari-detail-odeme">{formatTRY(cari.total_odeme)}</div>
               </div>
-              <div className="w-11 h-11 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center"><TrendingDown className="w-5 h-5" /></div>
+              <div className="w-11 h-11 rounded-xl bg-sky-100 text-sky-700 flex items-center justify-center"><HandCoins className="w-5 h-5" /></div>
             </div>
           </CardContent>
         </Card>
@@ -153,21 +169,50 @@ export default function CariDetail() {
           <CardContent className="p-5">
             <div className="flex items-start justify-between">
               <div>
-                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Net Bakiye</div>
-                <div className={`mt-2 text-2xl font-extrabold ${net >= 0 ? "text-emerald-700" : "text-rose-700"}`} data-testid="cari-detail-net">{formatTRY(net)}</div>
-                <div className="text-xs text-slate-500 mt-1">{net >= 0 ? "Lehinize bakiye" : "Aleyhinize bakiye"}</div>
+                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Kalan Alacak</div>
+                <div className="mt-2 text-2xl font-extrabold text-slate-900" data-testid="cari-detail-remaining">{formatTRY(cari.remaining_alacak)}</div>
+                <div className="text-xs text-slate-500 mt-1">Alacak − Ödeme</div>
               </div>
-              <div className="w-11 h-11 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center font-bold">₺</div>
+              <div className="w-11 h-11 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center"><Wallet className="w-5 h-5" /></div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="border-slate-200 shadow-sm">
+          <CardContent className="p-5">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Toplam Borç</div>
+                <div className="mt-2 text-2xl font-extrabold text-rose-700" data-testid="cari-detail-borc">{formatTRY(cari.total_borc)}</div>
+              </div>
+              <div className="w-11 h-11 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center"><TrendingDown className="w-5 h-5" /></div>
             </div>
           </CardContent>
         </Card>
       </div>
 
+      {/* Net balance highlight */}
+      <Card className={`border-2 shadow-sm ${net >= 0 ? "border-emerald-200 bg-emerald-50/50" : "border-rose-200 bg-rose-50/50"}`}>
+        <CardContent className="p-5 flex items-center justify-between">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Net Bakiye</div>
+            <div className={`mt-1 text-3xl font-extrabold ${net >= 0 ? "text-emerald-700" : "text-rose-700"}`} data-testid="cari-detail-net">
+              {formatTRY(net)}
+            </div>
+          </div>
+          <div className="text-sm text-slate-600 text-right">
+            {net > 0 && <span>Cari size <strong className="text-emerald-700">{formatTRY(Math.abs(net))}</strong> borçlu</span>}
+            {net < 0 && <span>Siz cariye <strong className="text-rose-700">{formatTRY(Math.abs(net))}</strong> borçlusunuz</span>}
+            {net === 0 && <span>Hesap kapalı — tam tahsil</span>}
+          </div>
+        </CardContent>
+      </Card>
+
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="grid grid-cols-3 w-full max-w-md">
+        <TabsList className="grid grid-cols-4 w-full max-w-2xl">
           <TabsTrigger value="all" data-testid="cari-tab-all">Tümü ({txs.length})</TabsTrigger>
-          <TabsTrigger value="alacak" data-testid="cari-tab-alacak">Alacaklar ({txs.filter((t) => t.type === "alacak").length})</TabsTrigger>
-          <TabsTrigger value="borc" data-testid="cari-tab-borc">Borçlar ({txs.filter((t) => t.type === "borc").length})</TabsTrigger>
+          <TabsTrigger value="alacak" data-testid="cari-tab-alacak">Alacaklar ({alacakCount})</TabsTrigger>
+          <TabsTrigger value="odeme" data-testid="cari-tab-odeme">Ödemeler ({odemeCount})</TabsTrigger>
+          <TabsTrigger value="borc" data-testid="cari-tab-borc">Borçlar ({borcCount})</TabsTrigger>
         </TabsList>
       </Tabs>
 
@@ -181,26 +226,30 @@ export default function CariDetail() {
                 <TableHead>Açıklama</TableHead>
                 <TableHead>Ekleyen</TableHead>
                 <TableHead className="text-right">Alacak</TableHead>
+                <TableHead className="text-right">Ödeme</TableHead>
                 <TableHead className="text-right">Borç</TableHead>
                 <TableHead className="text-right">İşlem</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filtered.length === 0 && (
-                <TableRow><TableCell colSpan={7} className="text-center text-slate-500 py-10">Hareket yok. Yukarıdan ekleyin.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={8} className="text-center text-slate-500 py-10">Hareket yok. Yukarıdan ekleyin.</TableCell></TableRow>
               )}
               {filtered.map((tx) => (
                 <TableRow key={tx.id} data-testid={`cari-tx-row-${tx.id}`}>
                   <TableCell className="text-slate-700">{formatDate(tx.date)}</TableCell>
                   <TableCell>
-                    <span className={`inline-flex items-center text-xs font-bold px-2 py-1 rounded-full ${tx.type === "alacak" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
-                      {tx.type === "alacak" ? "ALACAK" : "BORÇ"}
+                    <span className={`inline-flex items-center text-xs font-bold px-2 py-1 rounded-full ${BADGE_CLASS[tx.type]}`}>
+                      {TYPE_META[tx.type]?.shortLabel || tx.type.toUpperCase()}
                     </span>
                   </TableCell>
                   <TableCell className="font-medium text-slate-900">{tx.description || "-"}</TableCell>
                   <TableCell className="text-slate-500 text-sm">{tx.created_by_name}</TableCell>
                   <TableCell className="text-right font-semibold text-emerald-700">
                     {tx.type === "alacak" ? formatTRY(tx.amount) : "-"}
+                  </TableCell>
+                  <TableCell className="text-right font-semibold text-sky-700">
+                    {tx.type === "odeme" ? formatTRY(tx.amount) : "-"}
                   </TableCell>
                   <TableCell className="text-right font-semibold text-rose-700">
                     {tx.type === "borc" ? formatTRY(tx.amount) : "-"}
@@ -222,8 +271,15 @@ export default function CariDetail() {
               <TableFooter>
                 <TableRow className="bg-slate-50">
                   <TableCell colSpan={4} className="font-bold uppercase text-xs tracking-wider">Toplam</TableCell>
-                  <TableCell className="text-right font-extrabold text-emerald-700">{formatTRY(filtered.filter((t) => t.type === "alacak").reduce((s, i) => s + Number(i.amount || 0), 0))}</TableCell>
-                  <TableCell className="text-right font-extrabold text-rose-700">{formatTRY(filtered.filter((t) => t.type === "borc").reduce((s, i) => s + Number(i.amount || 0), 0))}</TableCell>
+                  <TableCell className="text-right font-extrabold text-emerald-700">
+                    {formatTRY(filtered.filter((t) => t.type === "alacak").reduce((s, i) => s + Number(i.amount || 0), 0))}
+                  </TableCell>
+                  <TableCell className="text-right font-extrabold text-sky-700">
+                    {formatTRY(filtered.filter((t) => t.type === "odeme").reduce((s, i) => s + Number(i.amount || 0), 0))}
+                  </TableCell>
+                  <TableCell className="text-right font-extrabold text-rose-700">
+                    {formatTRY(filtered.filter((t) => t.type === "borc").reduce((s, i) => s + Number(i.amount || 0), 0))}
+                  </TableCell>
                   <TableCell />
                 </TableRow>
               </TableFooter>
@@ -236,25 +292,36 @@ export default function CariDetail() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {editing ? "Hareketi Düzenle" : form.type === "alacak" ? "Alacak Ekle" : "Borç Ekle"}
+              {editing ? "Hareketi Düzenle" : `${TYPE_META[form.type].label} Ekle`}
             </DialogTitle>
-            <DialogDescription>{cari.name} için {form.type === "alacak" ? "alacak" : "borç"} hareketi oluşturun.</DialogDescription>
+            <DialogDescription>
+              {cari.name} için {TYPE_META[form.type].label.toLowerCase()} hareketi oluşturun.
+              {form.type === "odeme" && " Bu hareket toplam alacaktan düşülür."}
+            </DialogDescription>
           </DialogHeader>
           <form onSubmit={save} className="space-y-4">
-            {/* Type toggle */}
-            <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-lg">
+            {/* Type toggle - 3 button group */}
+            <div className="grid grid-cols-3 gap-2 p-1 bg-slate-100 rounded-lg">
               <button
                 type="button"
                 onClick={() => setForm({ ...form, type: "alacak" })}
-                className={`py-2 px-4 rounded-md text-sm font-semibold transition-colors ${form.type === "alacak" ? "bg-emerald-600 text-white" : "text-slate-600 hover:text-slate-900"}`}
+                className={`py-2 px-3 rounded-md text-sm font-semibold transition-colors ${form.type === "alacak" ? "bg-emerald-600 text-white" : "text-slate-600 hover:text-slate-900"}`}
                 data-testid="cari-form-type-alacak"
               >
                 Alacak
               </button>
               <button
                 type="button"
+                onClick={() => setForm({ ...form, type: "odeme" })}
+                className={`py-2 px-3 rounded-md text-sm font-semibold transition-colors ${form.type === "odeme" ? "bg-sky-600 text-white" : "text-slate-600 hover:text-slate-900"}`}
+                data-testid="cari-form-type-odeme"
+              >
+                Ödeme
+              </button>
+              <button
+                type="button"
                 onClick={() => setForm({ ...form, type: "borc" })}
-                className={`py-2 px-4 rounded-md text-sm font-semibold transition-colors ${form.type === "borc" ? "bg-rose-600 text-white" : "text-slate-600 hover:text-slate-900"}`}
+                className={`py-2 px-3 rounded-md text-sm font-semibold transition-colors ${form.type === "borc" ? "bg-rose-600 text-white" : "text-slate-600 hover:text-slate-900"}`}
                 data-testid="cari-form-type-borc"
               >
                 Borç
@@ -276,7 +343,7 @@ export default function CariDetail() {
             </div>
             <DialogFooter className="gap-2">
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>İptal</Button>
-              <Button type="submit" disabled={loading} className={form.type === "alacak" ? "bg-emerald-600 hover:bg-emerald-700" : "bg-rose-600 hover:bg-rose-700"} data-testid="cari-form-save">
+              <Button type="submit" disabled={loading} className={`${TYPE_META[form.type].btnClass} text-white`} data-testid="cari-form-save">
                 {loading ? "Kaydediliyor..." : "Kaydet"}
               </Button>
             </DialogFooter>
