@@ -8,8 +8,11 @@ from datetime import datetime
 BASE = os.environ.get("REACT_APP_BACKEND_URL", "https://accounting-app-207.preview.emergentagent.com").rstrip("/")
 API = f"{BASE}/api"
 
-U1 = {"email": "ahmet@sirket.com", "password": "Ahmet2026!"}
-U2 = {"email": "ayse@sirket.com", "password": "Ayse2026!"}
+U1 = {"email": "murat@karivo.local", "password": "Murat2026!"}
+U2 = {"email": "ozkan@karivo.local", "password": "Ozkan2026!"}
+WEBHOOK_CRON_SECRET = "H7l2JDt4UB-KmxRoMMwLXNcZ3qGVqzJj0USzt2FbOPbY1dvYpbNSJGMx2SyFcEyy"
+OLD_U1 = {"email": "ahmet@sirket.com", "password": "Ahmet2026!"}
+OLD_U2 = {"email": "ayse@sirket.com", "password": "Ayse2026!"}
 
 
 @pytest.fixture(scope="session")
@@ -36,12 +39,22 @@ class TestAuth:
         data = r.json()
         assert "token" in data and "user" in data
         assert data["user"]["email"] == U1["email"]
-        assert "Ahmet" in data["user"]["name"]
+        assert data["user"]["name"] == "Murat"
 
     def test_login_user2(self):
         r = requests.post(f"{API}/auth/login", json=U2, timeout=20)
         assert r.status_code == 200
-        assert "Ayşe" in r.json()["user"]["name"] or "Ayse" in r.json()["user"]["name"]
+        assert r.json()["user"]["name"] in ("Özkan", "Ozkan")
+
+    def test_old_users_removed(self):
+        for u in (OLD_U1, OLD_U2):
+            r = requests.post(f"{API}/auth/login", json=u, timeout=20)
+            assert r.status_code == 401, f"Old user {u['email']} should not login, got {r.status_code}"
+
+    def test_login_accepts_local_domain(self):
+        # LoginIn.email must be str (not EmailStr) to allow .local addresses
+        r = requests.post(f"{API}/auth/login", json=U1, timeout=20)
+        assert r.status_code == 200
 
     def test_login_bad(self):
         r = requests.post(f"{API}/auth/login", json={"email": U1["email"], "password": "wrong!"}, timeout=20)
@@ -389,3 +402,78 @@ class TestInvoiceImportPreviewConfirm:
     def test_confirm_empty_rejects(self, h1):
         r = requests.post(f"{API}/invoices/import-confirm", headers=h1, json={"items": []}, timeout=20)
         assert r.status_code == 400
+
+
+# ---------- NEW: Monthly report cron + preview + send-now ----------
+import uuid as _uuid
+
+
+class TestMonthlyReportCron:
+    def test_cron_no_auth(self):
+        r = requests.post(f"{API}/cron/monthly-report", json={}, timeout=20)
+        assert r.status_code == 401
+
+    def test_cron_wrong_token(self):
+        r = requests.post(f"{API}/cron/monthly-report",
+                          headers={"Authorization": "Bearer wrong-token"},
+                          json={}, timeout=20)
+        assert r.status_code == 401
+
+    def test_cron_correct_token(self):
+        run_id = f"test-{_uuid.uuid4()}"
+        r = requests.post(f"{API}/cron/monthly-report",
+                          headers={"Authorization": f"Bearer {WEBHOOK_CRON_SECRET}",
+                                   "X-Webhook-Id": run_id},
+                          json={}, timeout=20)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data.get("ok") is True
+        assert data.get("queued") == "monthly-report"
+        assert "run_id" in data
+
+    def test_cron_idempotency(self):
+        run_id = f"test-dup-{_uuid.uuid4()}"
+        headers = {"Authorization": f"Bearer {WEBHOOK_CRON_SECRET}",
+                   "X-Webhook-Id": run_id}
+        r1 = requests.post(f"{API}/cron/monthly-report", headers=headers, json={}, timeout=20)
+        assert r1.status_code == 200
+        r2 = requests.post(f"{API}/cron/monthly-report", headers=headers, json={}, timeout=20)
+        assert r2.status_code == 200
+        assert r2.json().get("duplicate") is True
+
+
+class TestMonthlyReportUser:
+    def test_preview_requires_auth(self):
+        r = requests.get(f"{API}/reports/monthly/preview", timeout=20)
+        assert r.status_code in (401, 403)
+
+    def test_preview_shape(self, h1):
+        r = requests.get(f"{API}/reports/monthly/preview", headers=h1, timeout=20)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        for k in ("totals", "top", "month_label", "range"):
+            assert k in data, f"Missing key {k} in preview"
+
+    def test_send_now(self, h1):
+        r = requests.post(f"{API}/reports/monthly/send-now", headers=h1, json={}, timeout=20)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d.get("ok") is True
+        assert d.get("queued") is True
+
+    def test_activity_log_contains_report(self, h1):
+        # Trigger cron twice to ensure background logs 'Rapor' entry
+        for _ in range(2):
+            requests.post(f"{API}/cron/monthly-report",
+                          headers={"Authorization": f"Bearer {WEBHOOK_CRON_SECRET}",
+                                   "X-Webhook-Id": f"log-{_uuid.uuid4()}"},
+                          json={}, timeout=20)
+        import time as _t
+        _t.sleep(3)  # background tasks may take a moment
+        r = requests.get(f"{API}/activity-logs?limit=200", headers=h1, timeout=20)
+        assert r.status_code == 200
+        rows = r.json()
+        found = any(("Rapor" in (row.get("section") or "") or "ylık rapor" in (row.get("message") or ""))
+                    for row in rows)
+        assert found, "Expected 'Rapor' activity log entry after cron run"
+
