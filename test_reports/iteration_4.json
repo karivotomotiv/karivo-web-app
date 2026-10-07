@@ -1,0 +1,27 @@
+{
+  "summary": "Iteration-4 (Cariler) backend + frontend testing. Backend: added TestCariler (full CRUD + cascading delete + totals) and TestCariIncomeExpense (cari_name resolution on incomes/expenses, /api/summary cari sums & math, /api/dashboard/monthly-trend inclusion of cari tx). 5 new tests added; pytest total 38 passed, 1 skipped by design. Frontend: Playwright flow verified sidebar nav order (Giderler → Cariler → Faturalar), /cariler list + search + create dialog, row click → /cariler/:id detail, add Alacak 5000 + Borç 1500 → KPI cards show ₺5.000,00 / ₺1.500,00 / Net ₺3.500,00, Tümü/Alacaklar/Borçlar tabs filter correctly (1/1/2), Gelirler form exposes 'income-form-cari' Select, cleanup via delete flow succeeded (toast 'Cari silindi'). No critical issues found.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now ~1551 lines — strongly advise splitting into routers (auth, finance, cariler, inventory, email, reports, dashboard). Growing cariler block adds another ~170 lines.",
+    "_attach_cari_totals runs an extra MongoDB query per cari on every list_cariler call (N+1). For a handful of cariler it is fine but will degrade with growth; consider a single $lookup + $group aggregation or caching totals on the cari doc updated via tx hooks.",
+    "GET /api/cariler/{cari_id}/transactions returns 404 if cari was deleted — good. But DELETE /api/cariler/{cari_id}/transactions/{tx_id} does NOT verify cari exists (only checks tx id+cari_id combo). Harmless since tx is cascaded-deleted, but worth documenting.",
+    "monthly-trend aggregates cari tx without filtering out tx for deleted cariler — but delete_cari already cascades tx, so no orphans in practice.",
+    "cari_id passed to incomes/expenses is NOT validated — if an invalid id is sent, _resolve_cari_name silently returns None and cari_name is stored null (cari_id is still stored as-is). Consider rejecting with 400 or clearing cari_id when name unresolved."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (added TestCariler and TestCariIncomeExpense — 5 new tests)"
+  ],
+  "success_rate": {"backend": "100% (38 passed, 1 skipped by design)", "frontend": "100% core cariler flow + nav + Gelirler cari selector"},
+  "test_credentials": "Murat: murat@karivo.local / Murat2026!   |   Özkan: ozkan@karivo.local / Ozkan2026!",
+  "seed_data_creation": "No persistent seed data. Tests use TEST_/UI_TEST_ prefix with cleanup.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "backend_test.py now has 39 tests across 14 classes. New cariler endpoints under /api/cariler and /api/cariler/{id}/transactions. UI selectors: nav-cariler, cari-add-btn, cari-search, cari-row-{id}, cari-edit-{id}, cari-delete-{id}, cari-form-{name|phone|address|note|save}, cari-detail-{alacak|borc|net}, cari-tab-{all|alacak|borc}, cari-add-{alacak|borc}, cari-form-{type-alacak|type-borc|amount|date|desc|save}, cari-tx-{row|edit|delete}-{id}, income-form-cari, expense-form-cari. Delete uses window.confirm (Playwright page.once('dialog', accept)).",
+  "rca of the issue": "N/A — no bugs found."
+}

@@ -477,3 +477,171 @@ class TestMonthlyReportUser:
                     for row in rows)
         assert found, "Expected 'Rapor' activity log entry after cron run"
 
+
+# ---------- NEW iter-4: Cariler CRUD + transactions ----------
+class TestCariler:
+    def test_requires_auth(self):
+        r = requests.get(f"{API}/cariler", timeout=20)
+        assert r.status_code in (401, 403)
+
+    def test_full_flow(self, h1):
+        # Create cari
+        r = requests.post(f"{API}/cariler", headers=h1,
+                          json={"name": "TEST_cari_A", "phone": "555", "address": "adr", "note": "n"}, timeout=20)
+        assert r.status_code == 200, r.text
+        c = r.json()
+        assert c["name"] == "TEST_cari_A"
+        assert c["phone"] == "555"
+        assert c["total_alacak"] == 0 and c["total_borc"] == 0 and c["net"] == 0 and c["tx_count"] == 0
+        cid = c["id"]
+
+        # Unknown id -> 404
+        r = requests.get(f"{API}/cariler/{_uuid.uuid4()}", headers=h1, timeout=20)
+        assert r.status_code == 404
+
+        # List includes
+        r = requests.get(f"{API}/cariler", headers=h1, timeout=20)
+        assert r.status_code == 200
+        assert any(x["id"] == cid for x in r.json())
+
+        # Update
+        r = requests.put(f"{API}/cariler/{cid}", headers=h1,
+                         json={"name": "TEST_cari_A2", "phone": "666", "address": "adr2", "note": ""}, timeout=20)
+        assert r.status_code == 200 and r.json()["name"] == "TEST_cari_A2"
+
+        # Add alacak 5000
+        r = requests.post(f"{API}/cariler/{cid}/transactions", headers=h1,
+                          json={"type": "alacak", "amount": 5000, "description": "sat", "date": "2026-01-10"}, timeout=20)
+        assert r.status_code == 200
+        tx1 = r.json()
+        assert tx1["type"] == "alacak" and tx1["amount"] == 5000
+        tx1_id = tx1["id"]
+
+        # Add borc 1500
+        r = requests.post(f"{API}/cariler/{cid}/transactions", headers=h1,
+                          json={"type": "borc", "amount": 1500, "date": "2026-01-11"}, timeout=20)
+        assert r.status_code == 200
+        tx2_id = r.json()["id"]
+
+        # Totals
+        r = requests.get(f"{API}/cariler/{cid}", headers=h1, timeout=20)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["total_alacak"] == 5000.0
+        assert d["total_borc"] == 1500.0
+        assert d["net"] == 3500.0
+        assert d["tx_count"] == 2
+
+        # Tx list
+        r = requests.get(f"{API}/cariler/{cid}/transactions", headers=h1, timeout=20)
+        assert r.status_code == 200 and len(r.json()) == 2
+
+        # Update tx
+        r = requests.put(f"{API}/cariler/{cid}/transactions/{tx2_id}", headers=h1,
+                         json={"type": "borc", "amount": 2500, "date": "2026-01-11"}, timeout=20)
+        assert r.status_code == 200 and r.json()["amount"] == 2500
+
+        # Delete tx
+        r = requests.delete(f"{API}/cariler/{cid}/transactions/{tx1_id}", headers=h1, timeout=20)
+        assert r.status_code == 200
+
+        r = requests.get(f"{API}/cariler/{cid}", headers=h1, timeout=20)
+        assert r.json()["tx_count"] == 1 and r.json()["total_alacak"] == 0 and r.json()["total_borc"] == 2500
+
+        # Delete cari -> cascades tx
+        r = requests.delete(f"{API}/cariler/{cid}", headers=h1, timeout=20)
+        assert r.status_code == 200
+
+        # Confirm removal
+        r = requests.get(f"{API}/cariler/{cid}", headers=h1, timeout=20)
+        assert r.status_code == 404
+
+        # Cascading: tx list on deleted cari also 404
+        r = requests.get(f"{API}/cariler/{cid}/transactions", headers=h1, timeout=20)
+        assert r.status_code == 404
+
+
+class TestCariIncomeExpense:
+    def test_income_with_cari_resolves_name(self, h1):
+        # Create cari
+        r = requests.post(f"{API}/cariler", headers=h1, json={"name": "TEST_cari_IE"}, timeout=20)
+        cid = r.json()["id"]
+        try:
+            # Income with cari_id
+            r = requests.post(f"{API}/incomes", headers=h1,
+                              json={"description": "TEST_inc_cari", "amount": 100, "cari_id": cid}, timeout=20)
+            assert r.status_code == 200
+            inc = r.json()
+            assert inc["cari_id"] == cid
+            assert inc["cari_name"] == "TEST_cari_IE"
+            iid = inc["id"]
+
+            # Clear cari_id
+            r = requests.put(f"{API}/incomes/{iid}", headers=h1,
+                             json={"description": "TEST_inc_cari", "amount": 100, "cari_id": None}, timeout=20)
+            assert r.status_code == 200
+            assert r.json()["cari_id"] is None
+            assert r.json()["cari_name"] is None
+            requests.delete(f"{API}/incomes/{iid}", headers=h1, timeout=20)
+
+            # Expense
+            r = requests.post(f"{API}/expenses", headers=h1,
+                              json={"description": "TEST_exp_cari", "amount": 50, "cari_id": cid}, timeout=20)
+            assert r.status_code == 200
+            assert r.json()["cari_name"] == "TEST_cari_IE"
+            eid = r.json()["id"]
+            r = requests.put(f"{API}/expenses/{eid}", headers=h1,
+                             json={"description": "TEST_exp_cari", "amount": 50, "cari_id": None}, timeout=20)
+            assert r.status_code == 200 and r.json()["cari_name"] is None
+            requests.delete(f"{API}/expenses/{eid}", headers=h1, timeout=20)
+        finally:
+            requests.delete(f"{API}/cariler/{cid}", headers=h1, timeout=20)
+
+    def test_summary_includes_cari_sums(self, h1):
+        # Snapshot summary before
+        before = requests.get(f"{API}/summary", headers=h1, timeout=20).json()
+        base_inc = before["total_income_direct"]
+        base_exp = before["total_expense_direct"]
+        base_alacak = before["cari_alacak"]
+        base_borc = before["cari_borc"]
+
+        # Create cari + tx
+        r = requests.post(f"{API}/cariler", headers=h1, json={"name": "TEST_cari_SUM"}, timeout=20)
+        cid = r.json()["id"]
+        try:
+            requests.post(f"{API}/cariler/{cid}/transactions", headers=h1,
+                          json={"type": "alacak", "amount": 777, "date": "2026-03-01"}, timeout=20)
+            requests.post(f"{API}/cariler/{cid}/transactions", headers=h1,
+                          json={"type": "borc", "amount": 222, "date": "2026-03-02"}, timeout=20)
+
+            after = requests.get(f"{API}/summary", headers=h1, timeout=20).json()
+            # Verify math relationships (parallel tests may shift absolute values)
+            assert round(after["total_income"], 2) == round(after["total_income_direct"] + after["cari_alacak"], 2)
+            assert round(after["total_expense"], 2) == round(after["total_expense_direct"] + after["cari_borc"], 2)
+            # Our own additions reflected in cari sums (>= our injected amounts)
+            assert after["cari_alacak"] >= 777.0
+            assert after["cari_borc"] >= 222.0
+            # Keys present
+            for k in ("total_income", "total_expense", "total_income_direct", "total_expense_direct", "cari_alacak", "cari_borc"):
+                assert k in after
+            _ = (base_inc, base_exp, base_alacak, base_borc)  # unused
+        finally:
+            requests.delete(f"{API}/cariler/{cid}", headers=h1, timeout=20)
+
+    def test_monthly_trend_includes_cari(self, h1):
+        r = requests.post(f"{API}/cariler", headers=h1, json={"name": "TEST_cari_MT"}, timeout=20)
+        cid = r.json()["id"]
+        month = "2026-05"
+        try:
+            requests.post(f"{API}/cariler/{cid}/transactions", headers=h1,
+                          json={"type": "alacak", "amount": 333, "date": f"{month}-10"}, timeout=20)
+            requests.post(f"{API}/cariler/{cid}/transactions", headers=h1,
+                          json={"type": "borc", "amount": 111, "date": f"{month}-11"}, timeout=20)
+            rows = requests.get(f"{API}/dashboard/monthly-trend", headers=h1, timeout=20).json()
+            row = next((r for r in rows if r["month"] == month), None)
+            assert row is not None, f"month {month} missing in trend"
+            assert row["income"] >= 333
+            assert row["expense"] >= 111
+        finally:
+            requests.delete(f"{API}/cariler/{cid}", headers=h1, timeout=20)
+
