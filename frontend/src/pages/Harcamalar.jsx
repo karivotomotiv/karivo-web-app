@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableFooter } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Plus, Pencil, Trash2, Wallet, Building, User, Users } from "lucide-react";
 import { toast } from "sonner";
 
@@ -207,6 +207,9 @@ export default function Harcamalar() {
             <DialogTitle>
               {editing ? "Harcamayı Düzenle" : "Yeni Harcama"}
             </DialogTitle>
+            <DialogDescription>
+              Önce harcamanın kime ait olduğunu seçin, ardından detayları girin.
+            </DialogDescription>
           </DialogHeader>
           <form onSubmit={save} className="space-y-4">
             <div className="space-y-2">
