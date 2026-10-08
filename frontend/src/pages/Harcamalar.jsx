@@ -24,7 +24,7 @@ export default function Harcamalar() {
   const [tab, setTab] = useState("company");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ name: "", amount: "", date: "" });
+  const [form, setForm] = useState({ category: "", name: "", amount: "", date: "" });
   const [loading, setLoading] = useState(false);
   // Filter state per tab
   const [filters, setFilters] = useState({
@@ -41,27 +41,34 @@ export default function Harcamalar() {
 
   const openNew = () => {
     setEditing(null);
-    setForm({ name: "", amount: "", date: new Date().toISOString().slice(0, 10) });
+    setForm({ category: "", name: "", amount: "", date: new Date().toISOString().slice(0, 10) });
     setOpen(true);
   };
   const openEdit = (it) => {
     setEditing(it);
-    setForm({ name: it.name, amount: String(it.amount), date: it.date });
+    setForm({ category: it.category, name: it.name, amount: String(it.amount), date: it.date });
     setOpen(true);
   };
 
   const save = async (e) => {
     e?.preventDefault();
+    if (!form.category) { toast.error("Lütfen harcamanın kime ait olduğunu seçin"); return; }
     if (!form.name.trim() || !form.amount) { toast.error("Ad ve tutar gereklidir"); return; }
     setLoading(true);
     try {
-      const payload = { category: tab, name: form.name.trim(), amount: Number(form.amount), date: form.date || null };
+      const payload = { category: form.category, name: form.name.trim(), amount: Number(form.amount), date: form.date || null };
       if (editing) {
         await api.put(`/spendings/${editing.id}`, payload);
-        toast.success("Harcama güncellendi");
+        const movedMsg = editing.category !== form.category
+          ? ` ve ${CATS.find((c) => c.key === form.category)?.short} olarak taşındı`
+          : "";
+        toast.success(`Harcama güncellendi${movedMsg}`);
+        // If moved, switch to the destination tab for visibility
+        if (editing.category !== form.category) setTab(form.category);
       } else {
         await api.post("/spendings", payload);
         toast.success("Harcama eklendi");
+        if (form.category !== tab) setTab(form.category);
       }
       setOpen(false);
       load();
@@ -198,10 +205,45 @@ export default function Harcamalar() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {editing ? "Harcamayı Düzenle" : "Yeni Harcama"} — {CATS.find((c) => c.key === tab)?.label}
+              {editing ? "Harcamayı Düzenle" : "Yeni Harcama"}
             </DialogTitle>
           </DialogHeader>
           <form onSubmit={save} className="space-y-4">
+            <div className="space-y-2">
+              <Label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Harcama kime ait? *
+              </Label>
+              <div className="grid grid-cols-3 gap-2" data-testid="spending-form-category-group">
+                {CATS.map((c) => {
+                  const active = form.category === c.key;
+                  return (
+                    <button
+                      key={c.key}
+                      type="button"
+                      onClick={() => setForm({ ...form, category: c.key })}
+                      className={`py-2.5 px-3 rounded-lg text-sm font-semibold border transition-colors flex items-center justify-center gap-2 ${
+                        active
+                          ? "bg-slate-900 text-white border-slate-900"
+                          : "bg-white text-slate-700 border-slate-200 hover:border-slate-400 hover:bg-slate-50"
+                      }`}
+                      data-testid={`spending-form-category-${c.key}`}
+                    >
+                      <c.Icon className="w-4 h-4" />
+                      {c.short}
+                    </button>
+                  );
+                })}
+              </div>
+              {!form.category && (
+                <p className="text-xs text-rose-600">Harcamanın kime ait olduğunu seçmelisiniz.</p>
+              )}
+              {editing && editing.category !== form.category && form.category && (
+                <p className="text-xs text-amber-700">
+                  Bu kayıt <strong>{CATS.find((c) => c.key === editing.category)?.short}</strong> sekmesinden{" "}
+                  <strong>{CATS.find((c) => c.key === form.category)?.short}</strong> sekmesine taşınacak.
+                </p>
+              )}
+            </div>
             <div className="space-y-2">
               <Label>Harcama Adı</Label>
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="spending-form-name" />
@@ -218,7 +260,7 @@ export default function Harcamalar() {
             </div>
             <DialogFooter className="gap-2">
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>İptal</Button>
-              <Button type="submit" disabled={loading} className="bg-slate-900 hover:bg-slate-800" data-testid="spending-form-save">Kaydet</Button>
+              <Button type="submit" disabled={loading || !form.category} className="bg-slate-900 hover:bg-slate-800" data-testid="spending-form-save">Kaydet</Button>
             </DialogFooter>
           </form>
         </DialogContent>
