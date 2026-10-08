@@ -142,7 +142,7 @@ export default function CariDetail() {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card className="border-slate-200 shadow-sm">
           <CardContent className="p-5">
             <div className="flex items-start justify-between">
@@ -162,17 +162,6 @@ export default function CariDetail() {
                 <div className="mt-2 text-2xl font-extrabold text-sky-700" data-testid="cari-detail-odeme">{formatTRY(cari.total_odeme)}</div>
               </div>
               <div className="w-11 h-11 rounded-xl bg-sky-100 text-sky-700 flex items-center justify-center"><HandCoins className="w-5 h-5" /></div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="border-slate-200 shadow-sm">
-          <CardContent className="p-5">
-            <div className="flex items-start justify-between">
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Toplam Borç</div>
-                <div className="mt-2 text-2xl font-extrabold text-rose-700" data-testid="cari-detail-borc">{formatTRY(cari.total_borc)}</div>
-              </div>
-              <div className="w-11 h-11 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center"><TrendingDown className="w-5 h-5" /></div>
             </div>
           </CardContent>
         </Card>
