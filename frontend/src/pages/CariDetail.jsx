@@ -169,18 +169,6 @@ export default function CariDetail() {
           <CardContent className="p-5">
             <div className="flex items-start justify-between">
               <div>
-                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Kalan Alacak</div>
-                <div className="mt-2 text-2xl font-extrabold text-slate-900" data-testid="cari-detail-remaining">{formatTRY(cari.remaining_alacak)}</div>
-                <div className="text-xs text-slate-500 mt-1">Alacak − Ödeme</div>
-              </div>
-              <div className="w-11 h-11 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center"><Wallet className="w-5 h-5" /></div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="border-slate-200 shadow-sm">
-          <CardContent className="p-5">
-            <div className="flex items-start justify-between">
-              <div>
                 <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Toplam Borç</div>
                 <div className="mt-2 text-2xl font-extrabold text-rose-700" data-testid="cari-detail-borc">{formatTRY(cari.total_borc)}</div>
               </div>
@@ -188,24 +176,25 @@ export default function CariDetail() {
             </div>
           </CardContent>
         </Card>
-      </div>
-
-      {/* Net balance highlight */}
-      <Card className={`border-2 shadow-sm ${net >= 0 ? "border-emerald-200 bg-emerald-50/50" : "border-rose-200 bg-rose-50/50"}`}>
-        <CardContent className="p-5 flex items-center justify-between">
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Net Bakiye</div>
-            <div className={`mt-1 text-3xl font-extrabold ${net >= 0 ? "text-emerald-700" : "text-rose-700"}`} data-testid="cari-detail-net">
-              {formatTRY(net)}
+        <Card className={`border-2 shadow-sm ${net >= 0 ? "border-emerald-200 bg-emerald-50/50" : "border-rose-200 bg-rose-50/50"}`}>
+          <CardContent className="p-5">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Net Bakiye</div>
+                <div className={`mt-2 text-2xl font-extrabold ${net >= 0 ? "text-emerald-700" : "text-rose-700"}`} data-testid="cari-detail-net">
+                  {formatTRY(net)}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">
+                  {net > 0 && <>Cari size borçlu</>}
+                  {net < 0 && <>Siz cariye borçlusunuz</>}
+                  {net === 0 && <>Hesap kapalı</>}
+                </div>
+              </div>
+              <div className={`w-11 h-11 rounded-xl flex items-center justify-center font-bold ${net >= 0 ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>₺</div>
             </div>
-          </div>
-          <div className="text-sm text-slate-600 text-right">
-            {net > 0 && <span>Cari size <strong className="text-emerald-700">{formatTRY(Math.abs(net))}</strong> borçlu</span>}
-            {net < 0 && <span>Siz cariye <strong className="text-rose-700">{formatTRY(Math.abs(net))}</strong> borçlusunuz</span>}
-            {net === 0 && <span>Hesap kapalı — tam tahsil</span>}
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </div>
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="grid grid-cols-4 w-full max-w-2xl">
