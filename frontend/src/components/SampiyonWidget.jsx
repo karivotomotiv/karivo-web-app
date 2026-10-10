@@ -2,7 +2,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { api, API, extractError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Sparkles, X, Send, Mic, MicOff, Volume2, VolumeX, Loader2, Wrench } from "lucide-react";
+import { Sparkles, X, Send, Mic, MicOff, Volume2, VolumeX, Loader2, Wrench, RotateCcw, Radio } from "lucide-react";
+import { useHandsFree } from "@/hooks/useHandsFree";
 import { toast } from "sonner";
 
 const TOOL_LABELS = {
@@ -17,6 +18,8 @@ const TOOL_LABELS = {
 
 const cleanForSpeech = (t) =>
   t.replace(/[*_#`>|]/g, "").replace(/\p{Extended_Pictographic}/gu, "").replace(/\s+/g, " ").trim();
+
+const WHISPER_JUNK = /altyaz|abone ol|izlediğiniz için|teşekkürler\.?$|^\W*$/i;
 
 const WELCOME = "Selam patron, ben Şampiyon. Harcama gir, satış yap, cariye ödeme işle, görev ekle — ne dersen yaparım. Yaz ya da mikrofona basıp söyle.";
 
@@ -52,6 +55,7 @@ export default function SampiyonWidget() {
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [voice, setVoice] = useState(null); // {idx, phase: 'loading'|'playing'}
+  const [handsFree, setHandsFree] = useState(false);
   const messagesRef = useRef(messages);
   const audioRef = useRef(null);
   const ttsAbortRef = useRef(null);
@@ -62,6 +66,14 @@ export default function SampiyonWidget() {
   const fabRef = useRef(null);
 
   useEffect(() => { messagesRef.current = messages; }, [messages]);
+  useEffect(() => {
+    api.get("/sampiyon/history").then(({ data }) => {
+      if (data?.length) {
+        setMessages(data.map((m) => ({ role: m.role, content: m.content, tool_trace: (m.tool_names || []).map((name) => ({ name })) })));
+      }
+    }).catch(() => {});
+  }, []);
+  useEffect(() => { if (!open) setHandsFree(false); }, [open]);
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, open, toolStatus]);
@@ -140,16 +152,12 @@ export default function SampiyonWidget() {
     if (!content || sending) return;
     stopSpeaking();
     const assistantIdx = messagesRef.current.length + 1;
-    const history = messagesRef.current
-      .filter((m) => !m.error && m.content)
-      .slice(-12)
-      .map((m) => ({ role: m.role, content: m.content }));
     setMessages((prev) => [...prev, { role: "user", content }, { role: "assistant", content: "", streaming: true }]);
     setInput("");
     setSending(true);
     let final = null;
     try {
-      await streamChat({ message: content, history }, (ev) => {
+      await streamChat({ message: content, history: [] }, (ev) => {
         if (ev.type === "delta") { setToolStatus(null); updateLast((m) => ({ content: m.content + ev.content })); }
         else if (ev.type === "tool") setToolStatus(TOOL_LABELS[ev.name] || "Çalışıyorum");
         else if (ev.type === "done") final = ev;
@@ -168,6 +176,34 @@ export default function SampiyonWidget() {
     }
   };
 
+  const transcribeAndSend = async (blob, handsFreeMode = false) => {
+    setTranscribing(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", blob, "voice.webm");
+      const { data } = await api.post("/sampiyon/transcribe", fd, { headers: { "Content-Type": "multipart/form-data" }, timeout: 60000 });
+      const txt = (data.text || "").trim();
+      if (txt && !(handsFreeMode && (txt.length < 2 || WHISPER_JUNK.test(txt)))) send(txt, true);
+      else if (!handsFreeMode) toast.info("Ses algılanamadı");
+    } catch (e) { toast.error(extractError(e)); }
+    finally { setTranscribing(false); }
+  };
+
+  const { level, userSpeaking } = useHandsFree({
+    enabled: handsFree,
+    paused: sending || transcribing || recording,
+    assistantSpeaking: voice?.phase === "playing",
+    onSpeechStart: () => { if (voice) stopSpeaking(); },
+    onUtterance: (blob) => transcribeAndSend(blob, true),
+    onError: () => { setHandsFree(false); toast.error("Mikrofon izni gerekli"); },
+  });
+
+  const newChat = async () => {
+    stopSpeaking();
+    try { await api.delete("/sampiyon/history"); } catch (e) { toast.error(extractError(e)); return; }
+    setMessages([{ role: "assistant", content: WELCOME }]);
+  };
+
   const startRecording = async () => {
     stopSpeaking();
     try {
@@ -178,17 +214,7 @@ export default function SampiyonWidget() {
       mr.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
       mr.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-        setTranscribing(true);
-        try {
-          const fd = new FormData();
-          fd.append("file", blob, "voice.webm");
-          const { data } = await api.post("/sampiyon/transcribe", fd, { headers: { "Content-Type": "multipart/form-data" }, timeout: 60000 });
-          const txt = (data.text || "").trim();
-          if (txt) send(txt, true);
-          else toast.info("Ses algılanamadı");
-        } catch (e) { toast.error(extractError(e)); }
-        finally { setTranscribing(false); }
+        transcribeAndSend(new Blob(audioChunksRef.current, { type: "audio/webm" }));
       };
       mr.start();
       setRecording(true);
@@ -228,6 +254,9 @@ export default function SampiyonWidget() {
               <div className="font-extrabold text-sm">Şampiyon</div>
               <div className="text-[11px] text-white/80">Karivo AI Asistanı · Gemini 3 Flash</div>
             </div>
+            <button onClick={newChat} title="Yeni Sohbet" className="text-xs bg-white/20 hover:bg-white/30 rounded-lg px-2 py-1 inline-flex items-center gap-1" data-testid="sampiyon-new-chat">
+              <RotateCcw className="w-3.5 h-3.5" /> Yeni
+            </button>
             {voice && (
               <button onClick={stopSpeaking} className="text-xs bg-white/20 hover:bg-white/30 rounded-lg px-2 py-1 inline-flex items-center gap-1" data-testid="sampiyon-stop-voice">
                 <VolumeX className="w-3.5 h-3.5" /> Sustur
@@ -277,11 +306,29 @@ export default function SampiyonWidget() {
           </div>
 
           <div className="p-3 border-t border-slate-200 bg-white">
+            <button
+              type="button"
+              onClick={() => setHandsFree((v) => !v)}
+              className={`w-full mb-2 rounded-xl px-3 py-2 text-xs font-semibold inline-flex items-center justify-center gap-2 transition-colors ${
+                handsFree ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+              }`}
+              data-testid="sampiyon-handsfree-toggle"
+            >
+              <Radio className={`w-4 h-4 ${handsFree ? "animate-pulse" : ""}`} />
+              {handsFree
+                ? (transcribing ? "Anlıyorum..." : sending ? "Düşünüyorum..." : userSpeaking ? "Seni dinliyorum..." : "Eller serbest açık — konuş, susunca gönderirim")
+                : "Eller Serbest Modu Aç"}
+              {handsFree && (
+                <span className="ml-1 h-1.5 w-16 bg-white/30 rounded-full overflow-hidden" data-testid="sampiyon-handsfree-level">
+                  <span className="block h-full bg-white transition-[width] duration-75" style={{ width: `${Math.round(level * 100)}%` }} />
+                </span>
+              )}
+            </button>
             <form onSubmit={(e) => { e.preventDefault(); send(); }} className="flex gap-2">
               <button
                 type="button"
                 onClick={recording ? stopRecording : startRecording}
-                disabled={transcribing || sending}
+                disabled={transcribing || sending || handsFree}
                 className={`w-10 h-10 shrink-0 rounded-xl flex items-center justify-center transition-colors ${
                   recording ? "bg-rose-600 text-white animate-pulse" : "bg-slate-100 text-slate-700 hover:bg-slate-200"
                 }`}

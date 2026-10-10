@@ -2401,10 +2401,15 @@ class SampiyonChatIn(BaseModel):
     history: List[dict] = []  # [{"role": "user"|"assistant", "content": "..."}]
 
 
-def _build_sampiyon_chat(data: "SampiyonChatIn", user: dict):
+async def _load_sampiyon_history(user_id: str, limit: int) -> List[dict]:
+    docs = await db.sampiyon_messages.find({"user_id": user_id}, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return list(reversed(docs))
+
+
+def _build_sampiyon_chat(data: "SampiyonChatIn", user: dict, raw_history: List[dict]):
     from emergentintegrations.llm.chat import LlmChat
     history: List[dict] = []
-    for h in data.history[-12:]:
+    for h in raw_history[-12:]:
         role = h.get("role")
         content = (h.get("content") or "").strip()
         if role in ("user", "assistant") and content:
@@ -2438,7 +2443,10 @@ async def _run_sampiyon_tool(tc, user: dict) -> dict:
 async def _sampiyon_events(data: "SampiyonChatIn", user: dict):
     from emergentintegrations.llm.chat import UserMessage, TextDelta, ToolCallStart, ToolCallReady, StreamDone
     import json as _json
-    chat = _build_sampiyon_chat(data, user)
+    raw_history = data.history or await _load_sampiyon_history(user["id"], 12)
+    chat = _build_sampiyon_chat(data, user, raw_history)
+    await db.sampiyon_messages.insert_one({"id": str(uuid.uuid4()), "user_id": user["id"], "role": "user",
+                                           "content": data.message, "created_at": now_iso()})
     msg = UserMessage(text=data.message)
     reply, trace = "", []
     for _ in range(8):
@@ -2466,7 +2474,22 @@ async def _sampiyon_events(data: "SampiyonChatIn", user: dict):
         msg = None
     changed = any(t["name"] in SAMPIYON_WRITE_TOOLS and isinstance(t["result"], dict) and t["result"].get("ok") for t in trace)
     await log_activity(user, "chat", "Sampiyon", f"Mesaj: {data.message[:120]}")
+    await db.sampiyon_messages.insert_one({"id": str(uuid.uuid4()), "user_id": user["id"], "role": "assistant",
+                                           "content": reply.strip() or "Tamamdır.", "tool_names": [t["name"] for t in trace],
+                                           "created_at": now_iso()})
     yield {"type": "done", "reply": reply.strip(), "tool_trace": trace, "data_changed": changed}
+
+
+@api_router.get("/sampiyon/history")
+async def sampiyon_history(user: dict = Depends(get_current_user)):
+    """Kullanıcının kayıtlı Şampiyon sohbeti (son 60 mesaj)."""
+    return await _load_sampiyon_history(user["id"], 60)
+
+
+@api_router.delete("/sampiyon/history")
+async def clear_sampiyon_history(user: dict = Depends(get_current_user)):
+    res = await db.sampiyon_messages.delete_many({"user_id": user["id"]})
+    return {"ok": True, "deleted": res.deleted_count}
 
 
 @api_router.post("/sampiyon/chat")
@@ -2703,6 +2726,7 @@ async def startup_event():
     await db.incomes.create_index("date")
     await db.expenses.create_index("date")
     await db.invoices.create_index("date")
+    await db.sampiyon_messages.create_index([("user_id", 1), ("created_at", -1)])
 
     # İki kullanıcıyı seed et (user_key üzerinden migration)
     seed_users = [
