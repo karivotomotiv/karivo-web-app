@@ -1,0 +1,23 @@
+{
+  "summary": "Iter-8 backend verification after legacy /api/inventory CRUD removal. Rewrote TestInventory → TestInventoryLegacyRemoved (verifies POST/PUT/DELETE return 404/405 and GET surfaces tires with legacy mirror fields product_name/remaining_qty/purchase_date/purchase_price). Rewrote TestInventoryAlerts to seed via POST /api/tires with quantity<4 and verify /api/inventory/alerts returns db.tires-backed low-stock items with the default threshold=4 plus a custom-threshold override test. Verified /api/inventory/send-low-stock-email reads db.tires, attempts both seed users, and surfaces @karivo.local Resend failures under failed[].error — low_stock_count>=1. Re-ran full suite (incl. TestTires + TestSampiyon chat with search_tires tool_trace + /api/sampiyon/import-confirm 2-item payload) against the preview URL. Result: 53/53 PASS.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/iter8_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py now 2239 lines — still well past the 700-line soft limit; recommend splitting into routers (auth, finance, tires, cariler, invoices, sampiyon, reports) in a future refactor.",
+    "/api/sampiyon/import-confirm still has no duplicate-detection (same brand+size+dot) — minor UX/data-hygiene improvement.",
+    "Sampiyon tool handlers still call endpoint functions directly (e.g., create_tire(..., user=user)) — consider extracting a service layer for easier unit testing.",
+    "/api/inventory/send-low-stock-email emails ALL users in db.users (limit 10) regardless of role; consider restricting to admins or opt-in subscribers once more users exist."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (53/53)", "frontend": "not tested this iteration"},
+  "test_credentials": "murat@karivo.local / Murat2026! · ozkan@karivo.local / Ozkan2026!",
+  "seed_data_creation": "All TEST_* tires created in tests are deleted in finally blocks. Confirmed no residual TEST_* records remain.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter-8 legacy /api/inventory routes cleanly removed; backend_test.py now has TestInventoryLegacyRemoved + rewritten TestInventoryAlerts (all tire-based, threshold=4). Full suite 53/53 green. Known: @karivo.local addresses are deliberately undeliverable → send-low-stock-email returns 200 with all recipients under failed[] (expected). Future iterations touching the tires schema or Şampiyon tool-calling flow should re-run this suite."
+}

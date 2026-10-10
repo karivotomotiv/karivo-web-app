@@ -155,20 +155,48 @@ class TestInvoices:
         assert r.status_code == 400
 
 
-# ---------- INVENTORY ----------
-class TestInventory:
-    def test_remaining_calc(self, h1):
-        payload = {"product_name": "TEST_prod", "required_qty": 10, "received_qty": 4, "purchase_price": 50}
-        r = requests.post(f"{API}/inventory", headers=h1, json=payload, timeout=20)
-        assert r.status_code == 200
-        d = r.json()
-        assert d["remaining_qty"] == 6.0
-        sid = d["id"]
-        # Update
-        payload2 = {**payload, "received_qty": 7}
-        r = requests.put(f"{API}/inventory/{sid}", headers=h1, json=payload2, timeout=20)
-        assert r.status_code == 200 and r.json()["remaining_qty"] == 3.0
-        assert requests.delete(f"{API}/inventory/{sid}", headers=h1, timeout=20).status_code == 200
+# ---------- INVENTORY (legacy routes removed in iter-8) ----------
+class TestInventoryLegacyRemoved:
+    """Legacy /api/inventory POST/PUT/DELETE should no longer exist (iter-8 cleanup).
+    Only GET /api/inventory remains as a redirect to tires with legacy mirror fields."""
+
+    def test_get_inventory_mirrors_tires(self, h1):
+        # Seed a tire so inventory GET surfaces at least one entry with mirror fields
+        tire = {"brand": "TEST_INV_MIR", "model": "M", "size": "195/60 R15",
+                "season": "yaz", "quantity": 3, "buy_price": 1000, "sell_price": 1400, "kdv_rate": 20}
+        rt = requests.post(f"{API}/tires", headers=h1, json=tire, timeout=20)
+        assert rt.status_code == 200
+        tid = rt.json()["id"]
+        try:
+            r = requests.get(f"{API}/inventory", headers=h1, timeout=20)
+            assert r.status_code == 200
+            items = r.json()
+            assert isinstance(items, list)
+            match = next((it for it in items if it.get("id") == tid), None)
+            assert match is not None, "Created tire must be present in /api/inventory"
+            # Legacy mirror fields
+            for k in ("product_name", "remaining_qty", "purchase_date", "purchase_price"):
+                assert k in match, f"Missing legacy mirror field {k}"
+            assert float(match["remaining_qty"]) == 3.0
+            assert match["product_name"]  # non-empty
+        finally:
+            requests.delete(f"{API}/tires/{tid}", headers=h1, timeout=20)
+
+    def test_post_inventory_removed(self, h1):
+        r = requests.post(f"{API}/inventory", headers=h1,
+                          json={"product_name": "x", "required_qty": 1, "received_qty": 1, "purchase_price": 1},
+                          timeout=20)
+        assert r.status_code in (404, 405), f"Expected 404/405 for removed POST /api/inventory, got {r.status_code}"
+
+    def test_put_inventory_removed(self, h1):
+        r = requests.put(f"{API}/inventory/some-id", headers=h1,
+                         json={"product_name": "x", "required_qty": 1, "received_qty": 1, "purchase_price": 1},
+                         timeout=20)
+        assert r.status_code in (404, 405)
+
+    def test_delete_inventory_removed(self, h1):
+        r = requests.delete(f"{API}/inventory/some-id", headers=h1, timeout=20)
+        assert r.status_code in (404, 405)
 
 
 # ---------- SPENDINGS ----------
@@ -250,76 +278,85 @@ class TestMonthlyTrend:
             requests.delete(f"{API}/incomes/{iid}", headers=h1, timeout=20)
 
 
-# ---------- NEW: Inventory alerts & email ----------
+# ---------- NEW: Inventory alerts & email (iter-8: db.tires with threshold<4) ----------
 class TestInventoryAlerts:
     def test_alerts_requires_auth(self):
         r = requests.get(f"{API}/inventory/alerts", timeout=20)
         assert r.status_code in (401, 403)
 
-    def test_alerts_returns_only_remaining_gt_zero(self, h1):
-        # Create low stock item
-        r = requests.post(f"{API}/inventory", headers=h1,
-                          json={"product_name": "TEST_alert_low", "required_qty": 20, "received_qty": 5, "purchase_price": 10},
-                          timeout=20)
-        assert r.status_code == 200
-        low_id = r.json()["id"]
-        # Create fulfilled item
-        r = requests.post(f"{API}/inventory", headers=h1,
-                          json={"product_name": "TEST_alert_full", "required_qty": 5, "received_qty": 5, "purchase_price": 10},
-                          timeout=20)
-        assert r.status_code == 200
-        full_id = r.json()["id"]
+    def test_alerts_identifies_low_stock_tires(self, h1):
+        """Seed one low (qty=2) and one healthy (qty=10) tire; verify alerts contains the low one."""
+        low = {"brand": "TEST_ALERT_LOW", "model": "L", "size": "195/55 R15",
+               "season": "yaz", "quantity": 2, "buy_price": 1500, "sell_price": 2000, "kdv_rate": 20}
+        full = {"brand": "TEST_ALERT_FULL", "model": "F", "size": "195/55 R15",
+                "season": "yaz", "quantity": 10, "buy_price": 1500, "sell_price": 2000, "kdv_rate": 20}
+        r1 = requests.post(f"{API}/tires", headers=h1, json=low, timeout=20)
+        assert r1.status_code == 200
+        low_id = r1.json()["id"]
+        r2 = requests.post(f"{API}/tires", headers=h1, json=full, timeout=20)
+        assert r2.status_code == 200
+        full_id = r2.json()["id"]
         try:
             r = requests.get(f"{API}/inventory/alerts", headers=h1, timeout=20)
             assert r.status_code == 200
             data = r.json()
-            assert "count" in data and "items" in data
-            assert isinstance(data["items"], list)
+            assert "count" in data and "items" in data and "threshold" in data
+            assert data["threshold"] == 4
             assert data["count"] == len(data["items"])
-            for it in data["items"]:
-                assert float(it["remaining_qty"]) > 0
-            names = {it["product_name"] for it in data["items"]}
-            assert "TEST_alert_low" in names
-            assert "TEST_alert_full" not in names
+            ids = {it["id"] for it in data["items"]}
+            assert low_id in ids, "Low-stock tire must appear in alerts"
+            assert full_id not in ids, "Healthy tire must NOT appear in alerts"
+            # Verify low tire has expected legacy fields
+            match = next(it for it in data["items"] if it["id"] == low_id)
+            assert "product_name" in match and match["product_name"]
+            assert float(match["quantity"]) == 2.0
         finally:
-            requests.delete(f"{API}/inventory/{low_id}", headers=h1, timeout=20)
-            requests.delete(f"{API}/inventory/{full_id}", headers=h1, timeout=20)
+            requests.delete(f"{API}/tires/{low_id}", headers=h1, timeout=20)
+            requests.delete(f"{API}/tires/{full_id}", headers=h1, timeout=20)
 
-    def test_send_low_stock_email_no_low_returns_400(self, h1):
-        # Clear remaining items temporarily? Can't; just verify response when no low stock
-        # If low stock exists in DB from seed/other, this will trigger an actual send.
-        # Approach: check current alerts; if 0, call endpoint and expect 400.
-        r = requests.get(f"{API}/inventory/alerts", headers=h1, timeout=20)
-        count = r.json().get("count", 0)
-        if count == 0:
-            r = requests.post(f"{API}/inventory/send-low-stock-email", headers=h1, timeout=30)
-            assert r.status_code == 400
-        else:
-            pytest.skip(f"Skipped: {count} low-stock items exist, can't test 400 case non-destructively")
-
-    def test_send_low_stock_email_sends(self, h1):
-        # Create a low stock item then attempt real send
-        r = requests.post(f"{API}/inventory", headers=h1,
-                          json={"product_name": "TEST_mail_low", "required_qty": 10, "received_qty": 2, "purchase_price": 5},
-                          timeout=20)
+    def test_alerts_custom_threshold(self, h1):
+        """threshold query param should override the default of 4."""
+        payload = {"brand": "TEST_ALERT_THRESH", "model": "T", "size": "205/55 R16",
+                   "season": "yaz", "quantity": 6, "buy_price": 2000, "sell_price": 2500, "kdv_rate": 20}
+        r = requests.post(f"{API}/tires", headers=h1, json=payload, timeout=20)
         assert r.status_code == 200
-        sid = r.json()["id"]
+        tid = r.json()["id"]
+        try:
+            # With threshold=4 — qty 6 should NOT be low
+            r = requests.get(f"{API}/inventory/alerts", headers=h1, params={"threshold": 4}, timeout=20)
+            assert r.status_code == 200
+            assert tid not in {it["id"] for it in r.json()["items"]}
+            # With threshold=10 — qty 6 SHOULD be low
+            r = requests.get(f"{API}/inventory/alerts", headers=h1, params={"threshold": 10}, timeout=20)
+            assert r.status_code == 200
+            assert tid in {it["id"] for it in r.json()["items"]}
+        finally:
+            requests.delete(f"{API}/tires/{tid}", headers=h1, timeout=20)
+
+    def test_send_low_stock_email_surfaces_failed_recipients(self, h1):
+        """Seed a low-stock tire; endpoint attempts to email all users.
+        Since @karivo.local addresses are undeliverable via Resend, we expect
+        the response to surface them under failed[].error."""
+        payload = {"brand": "TEST_MAIL_LOW", "model": "M", "size": "185/60 R14",
+                   "season": "yaz", "quantity": 1, "buy_price": 900, "sell_price": 1200, "kdv_rate": 20}
+        r = requests.post(f"{API}/tires", headers=h1, json=payload, timeout=20)
+        assert r.status_code == 200
+        tid = r.json()["id"]
         try:
             r = requests.post(f"{API}/inventory/send-low-stock-email", headers=h1, timeout=60)
-            # Accept 200 success; capture failures explicitly
-            assert r.status_code in (200, 500, 502), f"Unexpected status {r.status_code}: {r.text}"
-            if r.status_code == 200:
-                data = r.json()
-                assert "sent" in data and "failed" in data and "low_stock_count" in data
-                assert data["low_stock_count"] >= 1
-                # Must have attempted at least 2 recipients (both seeded users)
-                total_attempts = len(data["sent"]) + len(data["failed"])
-                assert total_attempts >= 2, f"Expected >=2 recipients, got {total_attempts}"
-                print(f"EMAIL RESULT: sent={len(data['sent'])}, failed={len(data['failed'])}, details={data}")
-            else:
-                print(f"EMAIL FAILED status={r.status_code}: {r.text}")
+            assert r.status_code == 200, f"Unexpected status {r.status_code}: {r.text}"
+            data = r.json()
+            for k in ("sent", "failed", "low_stock_count"):
+                assert k in data, f"Missing key {k} in response"
+            assert data["low_stock_count"] >= 1
+            total = len(data["sent"]) + len(data["failed"])
+            assert total >= 2, f"Expected ≥2 recipient attempts, got {total}"
+            # Each failed item must have an 'error' and 'email'
+            for f in data["failed"]:
+                assert "email" in f and "error" in f and f["error"]
+            print(f"EMAIL RESULT sent={len(data['sent'])} failed={len(data['failed'])} low_count={data['low_stock_count']}")
         finally:
-            requests.delete(f"{API}/inventory/{sid}", headers=h1, timeout=20)
+            requests.delete(f"{API}/tires/{tid}", headers=h1, timeout=20)
 
 
 # ---------- NEW: Invoice import preview + confirm ----------
