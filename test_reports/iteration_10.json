@@ -1,0 +1,25 @@
+{
+  "summary": "Iter-10: Validated Şampiyon AI chat fix (slow/broken multi-turn bug). Backend: new /app/backend/tests/test_sampiyon_regression.py — 4/4 PASS covering (1) single-turn chat Türkçe reply (no 'Hata:' prefix, uses tools), (2) multi-turn with assistant in history → 200 (previous 500 bug fixed), (3) /api/sampiyon/tts returns audio/mpeg 200 with speed=1.15, (4) speed clamping (speed=10.0 → still 200). Frontend: Playwright e2e via preview URL — logged in as Murat, opened sampiyon-fab→panel, confirmed sampiyon-mic exists, sent 'Stokta kaç çeşit lastik var?' got valid Turkish reply with tool trace, then sent follow-up 'Peki bu ayki gelir gider özeti ne?' with assistant history → second reply arrived in ~10s, no error, '2 araç kullandı' tool pill visible; Oku button triggered /api/sampiyon/tts → HTTP 200 audio/mpeg. All critical regression paths green.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_sampiyon_regression.py",
+    "/app/test_reports/pytest/iter10_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py now ~2493 lines — still past 700-line soft limit; split into routers overdue (unchanged from iter-9).",
+    "Şampiyon chat: history is truncated to last 10 messages but tool_result pairing is NOT preserved across turns — frontend only sends role/content pairs, so if a prior turn used tools, the LLM's internal tool_use blocks are lost. Current initial_messages approach is safe because only textual user/assistant alternation is reconstructed, but it means the model cannot 'remember' prior tool results beyond what it already summarized in text. Document this limitation.",
+    "SampiyonChatIn.history accepts arbitrary dicts (List[dict]) without a Pydantic sub-model — switch to List[ChatHistoryItem] for schema validation and reject invalid roles with 422 instead of silently dropping.",
+    "Backend /sampiyon/chat has no rate limit; a client stuck in a retry loop could exhaust the LLM key budget. Consider per-user QPS throttle.",
+    "TTS endpoint reads entire audio into memory then re-streams — for the 4000-char cap this is fine (<1MB) but could use direct passthrough for lower latency."
+  ],
+  "updated_files": ["/app/backend/tests/test_sampiyon_regression.py"],
+  "success_rate": {"backend": "100% (4/4 new regression + 61/61 prior suite still valid)", "frontend": "100% (login, panel open, mic presence, single-turn, multi-turn, TTS)"},
+  "test_credentials": "murat@karivo.local / Murat2026!",
+  "seed_data_creation": "None — tests are read-only chat/TTS calls.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter-10 verified Şampiyon chat multi-turn regression fix and TTS speed clamping. Reusable regression suite at /app/backend/tests/test_sampiyon_regression.py (run without -n xdist override: `pytest -o addopts= test_sampiyon_regression.py`). Note: Auth response key is `token` (NOT `access_token`); any new test module must use `r.json()['token']`. Mic button cannot be exercised in headless (getUserMedia unavailable) — only presence of data-testid='sampiyon-mic' is verifiable. If future iter adds streaming chat or tool-pair persistence in history, extend tests to cover a 3rd turn after tool use.",
+  "rca of the issue": "Original bug: /api/sampiyon/chat called a non-existent chat.add_assistant_message() while rebuilding history, raising 500 on every follow-up turn. Fix in server.py L2203-2219: history is now sanitized (user/assistant only, non-empty, leading-user guarantee) and passed via LlmChat(initial_messages=[system]+history) — verified by multi-turn test and live UI second-message flow."
+}

@@ -1,43 +1,46 @@
-# PRD — Küçük Şirket Yönetim Uygulaması
+# PRD — Karivo Otomotiv Lastik Satış Yönetim Sistemi
 
-## Original Problem Statement
-"Küçük bir şirket için gelir-gider, stok, harcama ve görev takip uygulaması yap. İki kullanıcı hesabı olsun, her birinin ayrı giriş ID ve şifresi olsun. Altı ana bölüm olsun: Gelirler, Giderler, Faturalar, Stok, Harcamalar ve Yapılacaklar. Gelirler, Giderler ve Faturalar bölümünde yeni kayıt eklendiğinde tarih otomatik yazılsın ve en alta toplam otomatik hesaplansın. Kayıtlar listelensin, silinebilsin ve düzenlenebilsin. Fatura eklerken tutar girilsin, uygulama %20 KDV'yi otomatik hesaplayıp o aya ait toplam KDV tutarını ayrıca göstersin. Excel veya PDF dosyası yükleyerek faturaları toplu içe aktarma özelliği olsun. Stok bölümünde ürün adı, ihtiyaç miktarı, alınan miktar, alış tarihi, alış fiyatı ve kalan miktar takip edilsin, kalan miktar otomatik hesaplansın. Harcamalar bölümünde üç ayrı sekme olsun: Şirket Harcamaları, Kullanıcı 1 Harcamaları ve Kullanıcı 2 Harcamaları. Her sekmede harcama adı, tutar ve tarih girilsin, en alta toplam otomatik hesaplansın. Yapılacaklar bölümünde görev adı ve not eklenebilsin, yapıldığında tamamlanma tarihi yazılabilsin veya silinebilsin. Her kullanıcının yaptığı tüm işlemler tarih ve saat ile birlikte kayıt altına alınsın ve görüntülenebilsin."
+## Original Problem Statement (Pivot, 2026-10)
+Orijinal genel küçük-işletme uygulamasından (gelir/gider/fatura/stok/harcama/yapılacaklar) **Karivo Otomotiv lastik satış sistemi**ne pivot edildi:
+- **Lastik Stoku**: Marka, model, ebat (ör: 205/55 R16), mevsim (yaz/kis/4mevsim), DOT, adet, alış/satış fiyatı, KDV.
+- **Satışlar**: Lastik + cari + adet + indirim; stoktan otomatik düşer, gelir kaydı atar, cari bakiyesini günceller.
+- **Cariler**: Müşteri/tedarikçi alacak-borç takibi, "Gelen Ödeme Gir" özelliği.
+- **Gelir / Giderler**: Tek sayfada sekmeli birleşik görünüm.
+- **Şampiyon AI Asistan**: Yüzen widget; Claude Sonnet 5.5 (metin + tool-calling), OpenAI Whisper (STT), OpenAI TTS Onyx (erkek ses, speed 1.15). Lastik sorguları, finans özeti, araç çağırımı (search_tires, get_stock_summary, get_finance_summary, list_cariler, add_tire, update_tire_stock, add_income, add_expense, list_recent_sales). Yazıcı işlemler kullanıcı onayı (confirmed=true) ister.
+- **Belge Yükleme (AI)**: Excel/PDF fatura yükle → LLM lastik verisi çıkarır → onay ekranı → stoğa işleme.
+- **E-posta**: Resend ile düşük stok uyarısı + aylık rapor (`.emergent/crons.yml`, her ayın 1'i 09:00 UTC).
+
+## Language
+Tüm UI ve iletişim **Türkçe**.
 
 ## Architecture
-- **Backend**: FastAPI + Motor (MongoDB), JWT (bcrypt + PyJWT), file parsing via `openpyxl` and `pdfplumber`.
-- **Frontend**: React 19 + React Router 7 + axios + shadcn/ui + lucide-react + sonner.
-- **Auth**: Fixed 2 seeded users (startup event), Bearer token in `Authorization` header. Token stored in `localStorage` under key `ks_token`.
+- **Backend**: FastAPI + Motor (MongoDB) — `/app/backend/server.py` (~2490 satır). JWT (bcrypt + PyJWT). `emergentintegrations` + `openai` (Universal Key).
+- **Frontend**: React 19 + React Router 7 + axios + shadcn/ui + sonner. Şampiyon widget: `/app/frontend/src/components/SampiyonWidget.jsx`.
+- **Auth**: Startup'ta seed edilen 2 kullanıcı (Murat, Özkan). Token `localStorage["ks_token"]`.
+- **Key API endpoints**: `/api/sampiyon/chat`, `/api/sampiyon/tts`, `/api/sampiyon/transcribe`, `/api/sampiyon/parse-tire-document`, `/api/sampiyon/import-confirm`, `/api/sales`, `/api/tires`, `/api/cariler`, `/api/invoices/import-preview|import-confirm`.
 
-## User Personas
-- **Kullanıcı 1 (Ahmet)** and **Kullanıcı 2 (Ayşe)** — small-business co-owners with identical full access across all sections.
+## DB Schema
+- `users`: {email, password_hash, role, user_key}
+- `tires`: {brand, model, size, season, dot, quantity, buy_price, sell_price, kdv_rate}
+- `cariler`: {name, total_alacak, total_borc, total_odeme, net}
+- `sales`: {tire_id, cari_id, qty, price, discount, payment_method}
+- `incomes`, `expenses`, `invoices`, `activity_logs`
 
-## Core Requirements (static)
-1. 2 fixed users, separate login IDs/passwords.
-2. 6 sections + activity log.
-3. Auto date + auto totals for Gelirler, Giderler, Faturalar.
-4. Invoice VAT (20%, inclusive): `VAT = amount - amount/1.20`; monthly VAT summary.
-5. Excel (.xlsx) and PDF bulk invoice import.
-6. Inventory remaining = required − received (auto).
-7. 3-tab Spendings (company / user1 / user2).
-8. Todos with completed_at timestamp.
-9. Full activity audit (user + timestamp per action).
+## Credentials
+`/app/memory/test_credentials.md` — murat@karivo.local / Murat2026!, ozkan@karivo.local / Ozkan2026!
 
-## What's Been Implemented (2026-02-05)
-- JWT auth with 2 seeded users (bcrypt).
-- All CRUD endpoints for 6 sections + `/api/summary`, `/api/invoices/vat-summary`, `/api/activity-logs`.
-- Excel/PDF bulk invoice import (`/api/invoices/import`).
-- Dashboard with 4 stat cards + net balance + inventory highlights.
-- Full frontend with sidebar navigation, data tables, dialogs, Turkish localization.
-- Activity log filtering by user, section, free-text search.
-- Testing: 15/15 backend pytest + core frontend flows passed.
+## Changelog
+- **2026-10 (bu iterasyon)**: Şampiyon kritik hata düzeltmesi — `chat.add_assistant_message` AttributeError ile her takip mesajı 500 veriyordu; geçmiş artık sanitize edilip `LlmChat(initial_messages=...)` ile yükleniyor. Sesli komut stale-state düzeltildi (history snapshot + autoSpeak). TTS hızı 1.15 (backend clamp 0.5-2.0). Sesli komut yanıtı otomatik okunuyor (autoplay engellenirse toast). SEC-001: tüm upload endpoint'lerine limit (10MB, transcribe 25MB), Excel 2000 satır / PDF 100 sayfa limiti. Test: iter-10, backend 4/4 + e2e frontend PASS.
+- Daha eski: iter 1-9 — pivot MVP (lastik stoku, cariler, satışlar, birleşik Gelir/Gider, Şampiyon widget, Resend crons).
 
 ## Prioritized Backlog
-- **P1**: CSV export (gelir/gider/fatura dışa aktarım), bar/line chart on dashboard, aylık karşılaştırma raporu.
-- **P1**: Fatura PDF önizleme (import sırasında satırları onaylama diyaloğu).
-- **P2**: KDV oranını yapılandırılabilir yap (bazı ürünler %10, %1).
-- **P2**: E-posta ile aylık rapor (Resend entegrasyonu).
-- **P2**: Çoklu şirket desteği, kullanıcı yönetimi UI.
+- **P1**: Belge yükleme onay ekranının UI akışını son kullanıcı ile doğrula (backend `/sampiyon/parse-tire-document` + `/import-confirm` hazır; UI iyileştirmesi gerekebilir).
+- **P1**: Şampiyon sohbet geçmişinde tool_result eşleşmesi korunmuyor (model önceki araç sonuçlarını sadece metin özetiyle hatırlıyor) — ileride tool-pair persistence.
+- **P2**: `SampiyonChatIn.history` için Pydantic alt modeli (şu an List[dict]).
+- **P2**: `/sampiyon/chat` için kullanıcı başına rate limit (LLM bütçe koruması).
+- **P2**: TTS'i bellekte toplamak yerine doğrudan passthrough stream (daha düşük gecikme).
+- **P2**: server.py (~2490 satır) router'lara bölünebilir.
 
 ## Known Limitations
-- Login brute-force lockout eklenmedi (sadece 2 sabit kullanıcı olduğu için düşük risk).
-- CORS varsayılan `*` — preview ortamında same-origin ingress üzerinden çalışıyor.
+- Whisper STT headless ortamda test edilemiyor (getUserMedia yok); sadece buton varlığı doğrulandı.
+- CORS `*` — preview same-origin ingress üzerinden çalışıyor.
