@@ -24,7 +24,7 @@ export default function SampiyonWidget() {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, open]);
 
-  const send = async (text) => {
+  const send = async (text, historyOverride, autoSpeak = false) => {
     const content = (text ?? input).trim();
     if (!content || sending) return;
     const newMessages = [...messages, { role: "user", content }];
@@ -32,10 +32,17 @@ export default function SampiyonWidget() {
     setInput("");
     setSending(true);
     try {
-      // keep only text content for history
-      const history = newMessages.slice(0, -1).map((m) => ({ role: m.role, content: m.content }));
-      const { data } = await api.post("/sampiyon/chat", { message: content, history });
-      setMessages([...newMessages, { role: "assistant", content: data.reply || "(boş yanıt)", tool_trace: data.tool_trace }]);
+      const history = (historyOverride ?? newMessages.slice(0, -1))
+        .filter((m) => !m.error && (m.role === "user" || m.role === "assistant"))
+        .slice(-10)
+        .map((m) => ({ role: m.role, content: m.content }));
+      const { data } = await api.post("/sampiyon/chat", { message: content, history }, { timeout: 120000 });
+      const replyMsg = { role: "assistant", content: data.reply || "(boş yanıt)", tool_trace: data.tool_trace };
+      const finalMessages = [...newMessages, replyMsg];
+      setMessages(finalMessages);
+      if (autoSpeak && replyMsg.content && !replyMsg.content.startsWith("Hata:")) {
+        speak(replyMsg.content, finalMessages.length - 1);
+      }
     } catch (e) {
       setMessages([...newMessages, { role: "assistant", content: `Hata: ${extractError(e)}`, error: true }]);
     } finally {
@@ -49,6 +56,7 @@ export default function SampiyonWidget() {
       const mr = new MediaRecorder(stream);
       mediaRecorderRef.current = mr;
       audioChunksRef.current = [];
+      const historySnapshot = messages;
       mr.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
       mr.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
@@ -57,9 +65,9 @@ export default function SampiyonWidget() {
         try {
           const fd = new FormData();
           fd.append("file", blob, "voice.webm");
-          const { data } = await api.post("/sampiyon/transcribe", fd, { headers: { "Content-Type": "multipart/form-data" } });
+          const { data } = await api.post("/sampiyon/transcribe", fd, { headers: { "Content-Type": "multipart/form-data" }, timeout: 60000 });
           const txt = (data.text || "").trim();
-          if (txt) { setInput(txt); setTimeout(() => send(txt), 100); }
+          if (txt) { setInput(txt); send(txt, historySnapshot, true); }
           else toast.info("Ses algılanamadı");
         } catch (e) { toast.error(extractError(e)); }
         finally { setTranscribing(false); }
@@ -85,14 +93,14 @@ export default function SampiyonWidget() {
       const resp = await fetch(`${API}/sampiyon/tts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
-        body: JSON.stringify({ text, voice: "onyx" }),
+        body: JSON.stringify({ text, voice: "onyx", speed: 1.15 }),
       });
       if (!resp.ok) throw new Error(await resp.text());
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       if (audioRef.current) {
         audioRef.current.src = url;
-        audioRef.current.play();
+        await audioRef.current.play().catch(() => toast.info("Otomatik oynatma engellendi — 'Oku'ya basın"));
       }
     } catch (e) {
       toast.error("Ses oynatılamadı");

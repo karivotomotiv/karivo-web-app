@@ -432,7 +432,7 @@ async def import_invoices(file: UploadFile = File(...), user: dict = Depends(get
     Excel beklenen başlıklar (sıra önemsiz): Tarih / Aciklama (veya Açıklama) / Tutar
     PDF: Her satırda tarih (YYYY-MM-DD veya DD.MM.YYYY), açıklama ve tutar bulunur.
     """
-    raw = await file.read()
+    raw = await _read_upload_limited(file)
     filename = (file.filename or "").lower()
     parsed: List[dict] = []
 
@@ -1794,7 +1794,7 @@ async def _parse_invoice_file(raw: bytes, filename: str) -> List[dict]:
 @api_router.post("/invoices/import-preview")
 async def import_invoices_preview(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
     """Dosyayı ayrıştırır, kaydetmeden parsed satırları döner (önizleme)."""
-    raw = await file.read()
+    raw = await _read_upload_limited(file)
     try:
         parsed = await _parse_invoice_file(raw, file.filename or "")
     except HTTPException:
@@ -2175,6 +2175,16 @@ SAMPIYON_TOOL_HANDLERS = {
 }
 
 
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
+async def _read_upload_limited(file: UploadFile, max_bytes: int = MAX_UPLOAD_BYTES) -> bytes:
+    raw = await file.read()
+    if len(raw) > max_bytes:
+        raise HTTPException(400, f"Dosya {max_bytes // (1024 * 1024)}MB'ı aşamaz")
+    return raw
+
+
 class SampiyonChatIn(BaseModel):
     message: str
     history: List[dict] = []  # [{"role": "user"|"assistant", "content": "..."}]
@@ -2191,17 +2201,22 @@ async def sampiyon_chat(data: SampiyonChatIn, user: dict = Depends(get_current_u
         raise HTTPException(500, f"AI kütüphanesi yüklü değil: {e}")
 
     session_id = f"sampiyon-{user['id']}"
+    # Geçmişi temizle ve başlangıç mesajları olarak yükle (son 10, user ile başlamalı)
+    history: List[dict] = []
+    for h in data.history[-10:]:
+        role = h.get("role")
+        content = (h.get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            history.append({"role": role, "content": content})
+    while history and history[0]["role"] != "user":
+        history.pop(0)
+    initial_messages = [{"role": "system", "content": SAMPIYON_SYSTEM_PROMPT}] + history
     chat = (
-        LlmChat(api_key=EMERGENT_LLM_KEY, session_id=session_id, system_message=SAMPIYON_SYSTEM_PROMPT)
+        LlmChat(api_key=EMERGENT_LLM_KEY, session_id=session_id, system_message=SAMPIYON_SYSTEM_PROMPT,
+                initial_messages=initial_messages)
         .with_model(SAMPIYON_MODEL_PROVIDER, SAMPIYON_MODEL_NAME)
         .with_tools(SAMPIYON_TOOLS, tool_choice="auto")
     )
-    # Geçmişi yükle — basitçe son 10 mesaj
-    for h in data.history[-10:]:
-        if h.get("role") == "user":
-            chat.add_user_message(h.get("content", ""))
-        elif h.get("role") == "assistant":
-            chat.add_assistant_message(h.get("content", ""))
 
     tool_trace: List[dict] = []
     try:
@@ -2236,9 +2251,7 @@ async def sampiyon_transcribe(file: UploadFile = File(...), user: dict = Depends
     """Ses dosyasını Whisper ile Türkçe metne çevirir."""
     if not EMERGENT_LLM_KEY:
         raise HTTPException(500, "AI anahtarı yapılandırılmamış")
-    raw = await file.read()
-    if len(raw) > 25 * 1024 * 1024:
-        raise HTTPException(400, "Ses dosyası 25MB'ı aşamaz")
+    raw = await _read_upload_limited(file, max_bytes=25 * 1024 * 1024)
     try:
         from emergentintegrations.llm.openai import OpenAISpeechToText
         stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
@@ -2255,6 +2268,7 @@ async def sampiyon_transcribe(file: UploadFile = File(...), user: dict = Depends
 class SampiyonTTSIn(BaseModel):
     text: str
     voice: Optional[str] = "onyx"  # erkek ses
+    speed: Optional[float] = 1.15
 
 
 @api_router.post("/sampiyon/tts")
@@ -2266,10 +2280,12 @@ async def sampiyon_tts(data: SampiyonTTSIn, user: dict = Depends(get_current_use
         from openai import AsyncOpenAI
         from fastapi.responses import StreamingResponse
         client = AsyncOpenAI(api_key=EMERGENT_LLM_KEY, base_url="https://integrations.emergentagent.com/llm")
+        speed = max(0.5, min(2.0, float(data.speed or 1.15)))
         async with client.audio.speech.with_streaming_response.create(
             model="tts-1",
             voice=data.voice or "onyx",
             input=data.text[:4000],
+            speed=speed,
         ) as resp:
             audio_bytes = b""
             async for chunk in resp.iter_bytes():
@@ -2286,25 +2302,30 @@ async def parse_tire_document(file: UploadFile = File(...), user: dict = Depends
     Stok DEĞİŞTİRMEZ; önizleme için parsed listesini döner (frontend ayrıca import-confirm çağırır)."""
     if not EMERGENT_LLM_KEY:
         raise HTTPException(500, "AI anahtarı yapılandırılmamış")
-    raw = await file.read()
-    if len(raw) > 10 * 1024 * 1024:
-        raise HTTPException(400, "Dosya 10MB'ı aşamaz")
+    raw = await _read_upload_limited(file)
     filename = (file.filename or "").lower()
 
     # 1) Metni çıkar
     text = ""
+    MAX_SHEET_ROWS = 2000
     if filename.endswith(".xlsx") or filename.endswith(".xlsm"):
         from openpyxl import load_workbook
         wb = load_workbook(io.BytesIO(raw), data_only=True)
+        row_count = 0
         for ws in wb.worksheets:
             for r in ws.iter_rows(values_only=True):
+                row_count += 1
+                if row_count > MAX_SHEET_ROWS:
+                    break
                 row = [str(c).strip() if c is not None else "" for c in r]
                 if any(row):
                     text += " | ".join(row) + "\n"
+            if row_count > MAX_SHEET_ROWS:
+                break
     elif filename.endswith(".pdf"):
         import pdfplumber
         with pdfplumber.open(io.BytesIO(raw)) as pdf:
-            text = "\n".join((p.extract_text() or "") for p in pdf.pages)
+            text = "\n".join((p.extract_text() or "") for p in pdf.pages[:100])
     else:
         raise HTTPException(400, "Yalnızca .xlsx veya .pdf dosyaları desteklenir")
 
