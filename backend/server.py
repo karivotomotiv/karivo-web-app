@@ -949,6 +949,204 @@ async def list_tire_movements(tire_id: str, user: dict = Depends(get_current_use
     return await db.stock_movements.find({"tire_id": tire_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
 
 
+# ---- Satışlar ----
+PaymentMethod = Literal["nakit", "kart", "havale", "veresiye"]
+
+
+class SaleItemIn(BaseModel):
+    tire_id: str
+    quantity: float
+    unit_price: float  # KDV dahil birim satış fiyatı
+    discount: float = 0  # satır bazlı indirim TL (ürün toplamından düşer)
+
+
+class SaleIn(BaseModel):
+    cari_id: Optional[str] = None  # veresiye için zorunlu
+    items: List[SaleItemIn]
+    overall_discount: float = 0  # genel indirim TL
+    payment_method: PaymentMethod = "nakit"
+    note: Optional[str] = ""
+    date: Optional[str] = None
+
+
+@api_router.get("/sales")
+async def list_sales(user: dict = Depends(get_current_user)):
+    docs = await db.sales.find({}, {"_id": 0}).sort("date", -1).to_list(2000)
+    return docs
+
+
+@api_router.get("/sales/{sale_id}")
+async def get_sale(sale_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.sales.find_one({"id": sale_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Satış bulunamadı")
+    return doc
+
+
+@api_router.post("/sales")
+async def create_sale(data: SaleIn, user: dict = Depends(get_current_user)):
+    if not data.items:
+        raise HTTPException(400, "En az bir ürün eklemelisiniz")
+    if data.payment_method == "veresiye" and not data.cari_id:
+        raise HTTPException(400, "Veresiye satış için cari seçimi zorunludur")
+
+    # Validate tires + yeter stok
+    enriched = []
+    for it in data.items:
+        if it.quantity <= 0 or it.unit_price < 0 or it.discount < 0:
+            raise HTTPException(400, "Geçersiz miktar, fiyat veya indirim")
+        tire = await db.tires.find_one({"id": it.tire_id}, {"_id": 0})
+        if not tire:
+            raise HTTPException(404, f"Lastik bulunamadı: {it.tire_id}")
+        if float(tire.get("quantity", 0)) < float(it.quantity):
+            raise HTTPException(400, f"{_tire_label(tire)} için yeterli stok yok (mevcut: {tire.get('quantity', 0)})")
+        line_gross = round(float(it.quantity) * float(it.unit_price), 2)
+        line_total = round(max(0.0, line_gross - float(it.discount)), 2)
+        enriched.append({
+            "tire_id": it.tire_id,
+            "tire_label": _tire_label(tire),
+            "quantity": float(it.quantity),
+            "unit_price": float(it.unit_price),
+            "discount": float(it.discount),
+            "line_total": line_total,
+        })
+
+    cari = None
+    if data.cari_id:
+        cari = await db.cariler.find_one({"id": data.cari_id}, {"_id": 0, "name": 1, "id": 1})
+        if not cari:
+            raise HTTPException(404, "Cari bulunamadı")
+
+    subtotal = round(sum(e["line_total"] for e in enriched), 2)
+    overall_disc = round(min(float(data.overall_discount or 0), subtotal), 2)
+    total = round(subtotal - overall_disc, 2)
+    sale_id = str(uuid.uuid4())
+    sale_date = data.date or now_iso()[:10]
+
+    # Atomic-ish execution: track side-effects, revert on failure
+    done_movement_ids: list = []
+    income_id: Optional[str] = None
+    cari_tx_id: Optional[str] = None
+    try:
+        # 1) stoktan düş (her ürün için hareket)
+        for e in enriched:
+            tire = await db.tires.find_one({"id": e["tire_id"]}, {"_id": 0})
+            before = float(tire.get("quantity", 0))
+            after = before - float(e["quantity"])
+            if after < 0:
+                raise HTTPException(400, f"Stok yetersiz: {e['tire_label']}")
+            await db.tires.update_one({"id": e["tire_id"]}, {"$set": {"quantity": after, "updated_at": now_iso()}})
+            mv_id = str(uuid.uuid4())
+            await db.stock_movements.insert_one({
+                "id": mv_id, "tire_id": e["tire_id"], "tire_label": e["tire_label"],
+                "delta": -float(e["quantity"]), "before": before, "after": after,
+                "reason": "satis", "note": f"Satış: {sale_id}", "date": sale_date,
+                "created_by": user["id"], "created_by_name": user["name"], "created_at": now_iso(),
+                "sale_id": sale_id,
+            })
+            done_movement_ids.append(mv_id)
+
+        # 2) ödeme yöntemine göre gelir / cari alacak
+        parts = [f"{e['quantity']:.0f}× {e['tire_label']}" for e in enriched]
+        desc = "Lastik satışı — " + ", ".join(parts[:3]) + (f" (+{len(parts)-3} ürün)" if len(parts) > 3 else "")
+        if cari:
+            desc = f"{cari['name']} — {desc}"
+
+        if data.payment_method == "veresiye":
+            # cari'ye alacak ekle; gelir OLUŞTURMA (henüz tahsilat yok)
+            cari_tx_id = str(uuid.uuid4())
+            await db.cari_transactions.insert_one({
+                "id": cari_tx_id, "cari_id": cari["id"], "type": "alacak",
+                "amount": total, "description": f"Veresiye satış: {desc}",
+                "date": sale_date, "created_by": user["id"], "created_by_name": user["name"],
+                "created_at": now_iso(), "sale_id": sale_id,
+            })
+        else:
+            # peşin: gelir kaydı
+            income_id = str(uuid.uuid4())
+            cari_name_val = cari["name"] if cari else None
+            await db.incomes.insert_one({
+                "id": income_id, "description": desc, "amount": total,
+                "date": sale_date, "cari_id": cari["id"] if cari else None, "cari_name": cari_name_val,
+                "created_by": user["id"], "created_by_name": user["name"],
+                "created_at": now_iso(), "sale_id": sale_id,
+            })
+
+        # 3) satış kaydı
+        sale_doc = {
+            "id": sale_id,
+            "cari_id": cari["id"] if cari else None,
+            "cari_name": cari["name"] if cari else None,
+            "items": enriched,
+            "subtotal": subtotal,
+            "overall_discount": overall_disc,
+            "total": total,
+            "payment_method": data.payment_method,
+            "note": (data.note or "").strip(),
+            "date": sale_date,
+            "income_id": income_id,
+            "cari_tx_id": cari_tx_id,
+            "movement_ids": done_movement_ids,
+            "created_by": user["id"],
+            "created_by_name": user["name"],
+            "created_at": now_iso(),
+            "reversed": False,
+        }
+        await db.sales.insert_one(sale_doc)
+        sale_doc.pop("_id", None)
+        await log_activity(
+            user, "create", "Satış",
+            f"{desc} — {total}₺ ({data.payment_method})",
+        )
+        return sale_doc
+
+    except HTTPException:
+        # Yan etkileri geri al
+        for mv_id in done_movement_ids:
+            mv = await db.stock_movements.find_one({"id": mv_id}, {"_id": 0})
+            if mv:
+                await db.tires.update_one({"id": mv["tire_id"]}, {"$inc": {"quantity": -float(mv["delta"])}})
+                await db.stock_movements.delete_one({"id": mv_id})
+        if income_id:
+            await db.incomes.delete_one({"id": income_id})
+        if cari_tx_id:
+            await db.cari_transactions.delete_one({"id": cari_tx_id})
+        raise
+
+
+@api_router.delete("/sales/{sale_id}")
+async def delete_sale(sale_id: str, user: dict = Depends(get_current_user)):
+    sale = await db.sales.find_one({"id": sale_id}, {"_id": 0})
+    if not sale:
+        raise HTTPException(404, "Satış bulunamadı")
+    if sale.get("reversed"):
+        raise HTTPException(400, "Satış zaten iptal edilmiş")
+
+    # 1) stok hareketlerini geri al
+    for mv_id in sale.get("movement_ids", []):
+        mv = await db.stock_movements.find_one({"id": mv_id}, {"_id": 0})
+        if mv:
+            await db.tires.update_one({"id": mv["tire_id"]}, {"$inc": {"quantity": -float(mv["delta"])}, "$set": {"updated_at": now_iso()}})
+            # Ters hareket logu
+            await db.stock_movements.insert_one({
+                "id": str(uuid.uuid4()), "tire_id": mv["tire_id"], "tire_label": mv.get("tire_label", ""),
+                "delta": -float(mv["delta"]), "before": mv["after"], "after": mv["before"],
+                "reason": "iade", "note": f"Satış iptali: {sale_id}", "date": now_iso()[:10],
+                "created_by": user["id"], "created_by_name": user["name"], "created_at": now_iso(),
+                "sale_id": sale_id,
+            })
+    # 2) gelir sil
+    if sale.get("income_id"):
+        await db.incomes.delete_one({"id": sale["income_id"]})
+    # 3) cari alacak sil
+    if sale.get("cari_tx_id"):
+        await db.cari_transactions.delete_one({"id": sale["cari_tx_id"]})
+
+    await db.sales.update_one({"id": sale_id}, {"$set": {"reversed": True, "reversed_at": now_iso(), "reversed_by": user["name"]}})
+    await log_activity(user, "delete", "Satış", f"İptal edildi: {sale.get('total', 0)}₺")
+    return {"ok": True}
+
+
 # ---- Legacy Stok uç noktaları (geriye dönük uyumluluk — artık lastik tablosuna yönlendirilir) ----
 @api_router.get("/inventory")
 async def list_inventory_legacy(user: dict = Depends(get_current_user)):
@@ -1683,8 +1881,7 @@ SAMPIYON_SYSTEM_PROMPT = """Sen Karivo Otomotiv'in Türkçe konuşan AI asistan�
 Rol: Küçük bir lastik firmasında stok, satış, müşteri (cari) ve finans verilerini anlamak ve yönetmek için kullanıcıya yardım edersin.
 Veri: Araçları kullanarak gerçek veritabanına erişebilirsin — tahmin yürütme, sadece araç sonuçlarına dayan.
 Dil: Her zaman net, kısa ve profesyonel Türkçe cevap ver. Sayıları ₺ ile biçimlendir.
-Değişiklik yapan araçlar: Veritabanını değiştiren araçları (ekle, güncelle, hareket) ÇAĞIRMADAN ÖNCE kullanıcıya ne yapacağını özetle ve onay iste. Kullanıcı 'evet', 'onayla', 'tamam' derse işlemi gerçekleştir. Belirsizlik varsa önce arama/sorgulama araçlarını kullan.
-Kısıtlar: Satış modülü şu an yok — kullanıcı 'satış' derse 'satış modülü henüz eklenmedi' de ama Gelirler kaydı önerebilirsin.
+Değişiklik yapan araçlar: Veritabanını değiştiren araçları (ekle, güncelle, hareket, satış) ÇAĞIRMADAN ÖNCE kullanıcıya ne yapacağını özetle ve onay iste. Kullanıcı 'evet', 'onayla', 'tamam' derse işlemi gerçekleştir. Belirsizlik varsa önce arama/sorgulama araçlarını kullan.
 Çıktı: Araç sonuçlarını kullanıcı dostu özetle. Lastik listelerinde en fazla 10 satır göster; daha fazlası varsa 'toplam X kayıt' olarak belirt."""
 
 
@@ -1813,7 +2010,41 @@ SAMPIYON_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_recent_sales",
+            "description": "Son satış kayıtlarını listeler (varsayılan 20). Bugünkü satışları özetlemek için kullan.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "number", "default": 20},
+                    "start_date": {"type": "string"},
+                    "end_date": {"type": "string"},
+                },
+            },
+        },
+    },
 ]
+
+
+async def _tool_list_recent_sales(args: dict, user: dict) -> dict:
+    q: dict = {"reversed": {"$ne": True}}
+    if args.get("start_date") or args.get("end_date"):
+        q["date"] = {}
+        if args.get("start_date"):
+            q["date"]["$gte"] = args["start_date"]
+        if args.get("end_date"):
+            q["date"]["$lte"] = args["end_date"]
+    limit = int(args.get("limit") or 20)
+    docs = await db.sales.find(q, {"_id": 0}).sort("date", -1).to_list(limit)
+    total = sum(float(d.get("total", 0)) for d in docs)
+    out = [{
+        "id": d["id"], "date": d.get("date"), "cari_name": d.get("cari_name"),
+        "total": d.get("total"), "payment_method": d.get("payment_method"),
+        "item_count": len(d.get("items", [])),
+    } for d in docs]
+    return {"count": len(out), "total_amount": round(total, 2), "items": out[:50]}
 
 
 async def _tool_search_tires(args: dict, user: dict) -> dict:
@@ -1939,6 +2170,7 @@ SAMPIYON_TOOL_HANDLERS = {
     "update_tire_stock": _tool_update_tire_stock,
     "add_income": _tool_add_income,
     "add_expense": _tool_add_expense,
+    "list_recent_sales": _tool_list_recent_sales,
 }
 
 

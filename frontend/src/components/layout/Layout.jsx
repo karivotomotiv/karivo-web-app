@@ -17,13 +17,15 @@ import {
   LayoutDashboard,
   Settings,
   Users,
+  ShoppingCart,
+  Scale,
 } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 
 const NAV = [
   { to: "/", label: "Özet", icon: LayoutDashboard, testId: "nav-dashboard", end: true },
-  { to: "/gelirler", label: "Gelirler", icon: TrendingUp, testId: "nav-gelirler" },
-  { to: "/giderler", label: "Giderler", icon: TrendingDown, testId: "nav-giderler" },
+  { to: "/satislar", label: "Satışlar", icon: ShoppingCart, testId: "nav-satislar" },
+  { to: "/gelir-gider", label: "Gelir / Giderler", icon: Scale, testId: "nav-gelir-gider" },
   { to: "/cariler", label: "Cariler", icon: Users, testId: "nav-cariler" },
   { to: "/faturalar", label: "Faturalar", icon: FileText, testId: "nav-faturalar" },
   { to: "/stok", label: "Lastik Stok", icon: Package, testId: "nav-stok" },

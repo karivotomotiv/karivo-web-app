@@ -12,6 +12,8 @@ import Yapilacaklar from "@/pages/Yapilacaklar";
 import ActivityLog from "@/pages/ActivityLog";
 import Cariler from "@/pages/Cariler";
 import CariDetail from "@/pages/CariDetail";
+import Satislar from "@/pages/Satislar";
+import GelirGider from "@/pages/GelirGider";
 import "@/App.css";
 
 export default function App() {
@@ -22,6 +24,8 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<Layout />}>
             <Route index element={<Dashboard />} />
+            <Route path="satislar" element={<Satislar />} />
+            <Route path="gelir-gider" element={<GelirGider />} />
             <Route path="gelirler" element={<Gelirler />} />
             <Route path="giderler" element={<Giderler />} />
             <Route path="cariler" element={<Cariler />} />
