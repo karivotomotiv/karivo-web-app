@@ -58,11 +58,24 @@ export default function SampiyonWidget() {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const scrollRef = useRef(null);
+  const panelRef = useRef(null);
+  const fabRef = useRef(null);
 
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, open, toolStatus]);
+
+  // Panel dışına (boş alana) tıklanınca paneli kapat, konuşma beklemeye geçer
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointerDown = (e) => {
+      if (panelRef.current?.contains(e.target) || fabRef.current?.contains(e.target)) return;
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [open]);
 
   const stopSpeaking = useCallback(() => {
     ttsAbortRef.current?.abort();
@@ -106,6 +119,7 @@ export default function SampiyonWidget() {
       if (ctrl.signal.aborted) return;
       const a = audioRef.current;
       a.src = URL.createObjectURL(blob);
+      a.playbackRate = 1.25;
       a.onended = () => setVoice(null);
       setVoice({ idx, phase: "playing" });
       await a.play().catch(() => { setVoice(null); toast.info("Otomatik oynatma engellendi — 'Oku'ya basın"); });
@@ -193,6 +207,7 @@ export default function SampiyonWidget() {
     <>
       <audio ref={audioRef} className="hidden" data-testid="sampiyon-audio" />
       <button
+        ref={fabRef}
         onClick={() => setOpen(!open)}
         className={`fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full shadow-xl flex items-center justify-center transition-all ${
           open ? "bg-slate-700 hover:bg-slate-800 scale-90" : "bg-gradient-to-br from-indigo-600 to-fuchsia-600 hover:from-indigo-700 hover:to-fuchsia-700 hover:scale-110"
@@ -204,7 +219,7 @@ export default function SampiyonWidget() {
       </button>
 
       {open && (
-        <div className="fixed bottom-24 right-6 z-50 w-[400px] max-w-[calc(100vw-3rem)] h-[600px] max-h-[calc(100vh-8rem)] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden" data-testid="sampiyon-panel">
+        <div ref={panelRef} className="fixed bottom-24 right-6 z-50 w-[400px] max-w-[calc(100vw-3rem)] h-[600px] max-h-[calc(100vh-8rem)] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden" data-testid="sampiyon-panel">
           <div className="bg-gradient-to-r from-indigo-600 to-fuchsia-600 text-white px-4 py-3 flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center backdrop-blur-sm">
               <Sparkles className="w-5 h-5" />

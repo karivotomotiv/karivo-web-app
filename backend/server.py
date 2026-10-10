@@ -2527,7 +2527,8 @@ async def sampiyon_transcribe(file: UploadFile = File(...), user: dict = Depends
 SAMPIYON_TTS_INSTRUCTIONS = (
     "Türkçe konuşan, 30'lu yaşlarda, samimi ve enerjik bir erkek oto lastik ustası gibi konuş. "
     "Doğal, sıcak ve akıcı bir tonla; robot gibi değil, arkadaşınla konuşur gibi. "
-    "Tempo canlı ve biraz hızlı olsun, gereksiz duraklama yapma. Sayıları ve para birimlerini doğal Türkçe oku."
+    "Çok hızlı ve kıpır kıpır bir tempoyla konuş; cümlelerin arasında neredeyse hiç duraklama olmasın, kekeleyen değil akıcı ama çabuk konuşan biri gibi ol. "
+    "Sayıları ve para birimlerini doğal Türkçe oku."
 )
 
 
