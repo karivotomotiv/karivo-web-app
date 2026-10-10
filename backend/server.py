@@ -1884,6 +1884,7 @@ YETKİ: Kullanıcı bir şey yapmanı isterse (ekle, gir, kaydet, güncelle, tam
 ONAY SADECE İKİ DURUMDA: (1) Satış oluşturma (create_sale), (2) Herhangi bir kaydı silme (delete_record). Bunlarda önce tek cümleyle özetle ve "onaylıyor musun?" diye sor; kullanıcı evet/tamam/olur derse confirmed=true ile çağır.
 Kimlik çözme: Cari adı söylenirse cari_name ile gönder. Lastik için önce search_tires ile id bul. Silme/tamamlama için önce list_records ile id bul.
 "Harcama" denirse add_spending kullan (kategori belirtilmezse company). "Gider" denirse add_expense kullan.
+"X'ten ödeme geldi / tahsil ettim" → add_cari_transaction(type=odeme). "X'e borçlandık / X'ten mal aldık veresiye" → type=borc. "X bize borçlandı / X'e alacak yaz" → type=alacak.
 Dil: Türkçe, ÇOK kısa ve net (1-3 cümle). Sayıları ₺ ile yaz. Markdown başlık/tablo kullanma; gerekirse kısa liste.
 Hata: Ters giderse direkt söyle: "3 adet lazım ama stokta 2 var" gibi.
 Uzun listelerde 'toplam X kayıt, ilk 10:' şeklinde özetle."""
