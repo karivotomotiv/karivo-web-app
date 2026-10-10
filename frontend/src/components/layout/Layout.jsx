@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import SettingsDialog from "@/components/SettingsDialog";
+import SampiyonWidget from "@/components/SampiyonWidget";
 import {
   TrendingUp,
   TrendingDown,
@@ -25,7 +26,7 @@ const NAV = [
   { to: "/giderler", label: "Giderler", icon: TrendingDown, testId: "nav-giderler" },
   { to: "/cariler", label: "Cariler", icon: Users, testId: "nav-cariler" },
   { to: "/faturalar", label: "Faturalar", icon: FileText, testId: "nav-faturalar" },
-  { to: "/stok", label: "Stok", icon: Package, testId: "nav-stok" },
+  { to: "/stok", label: "Lastik Stok", icon: Package, testId: "nav-stok" },
   { to: "/harcamalar", label: "Harcamalar", icon: Wallet, testId: "nav-harcamalar" },
   { to: "/yapilacaklar", label: "Yapılacaklar", icon: ListChecks, testId: "nav-yapilacaklar" },
   { to: "/islem-gunlugu", label: "İşlem Günlüğü", icon: History, testId: "nav-logs" },
@@ -133,6 +134,7 @@ export default function Layout() {
       </main>
 
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <SampiyonWidget />
       <Toaster position="top-right" richColors />
     </div>
   );

@@ -783,6 +783,229 @@ async def delete_cari_tx(cari_id: str, tx_id: str, user: dict = Depends(get_curr
     return {"ok": True}
 
 
+# ---- Stok (Lastik) ----
+TIRE_SEASONS = Literal["yaz", "kis", "4mevsim"]
+
+
+class TireIn(BaseModel):
+    brand: str
+    model: Optional[str] = ""
+    size: str  # ör: 205/55 R16
+    season: TIRE_SEASONS = "4mevsim"
+    dot: Optional[str] = ""  # DOT / üretim yılı
+    quantity: float = 0
+    buy_price: float = 0
+    sell_price: float = 0
+    kdv_rate: float = 20
+    note: Optional[str] = ""
+
+
+class TireOut(TireIn):
+    id: str
+    created_by: str
+    created_by_name: str
+    created_at: str
+    updated_at: Optional[str] = None
+    # Legacy stok alanları — geriye dönük uyumluluk için otomatik türetilir
+    product_name: Optional[str] = None
+    required_qty: Optional[float] = None
+    received_qty: Optional[float] = None
+    remaining_qty: Optional[float] = None
+    purchase_date: Optional[str] = None
+    purchase_price: Optional[float] = None
+
+
+class TireMovementIn(BaseModel):
+    delta: float  # pozitif = giriş, negatif = çıkış
+    reason: str  # "alis", "satis", "iade", "sayim-duzeltme", "fire", "diger"
+    note: Optional[str] = ""
+    date: Optional[str] = None
+
+
+def _tire_label(doc: dict) -> str:
+    parts = [doc.get("brand", ""), doc.get("model", ""), doc.get("size", "")]
+    season_map = {"yaz": "Yaz", "kis": "Kış", "4mevsim": "4 Mevsim"}
+    s = season_map.get(doc.get("season"), "")
+    if s:
+        parts.append(s)
+    if doc.get("dot"):
+        parts.append(f"DOT:{doc['dot']}")
+    return " ".join(p for p in parts if p).strip()
+
+
+def _tire_as_legacy(doc: dict) -> dict:
+    """Eski Stok UI'si ile uyum için ek alanlar."""
+    doc["product_name"] = _tire_label(doc)
+    doc["remaining_qty"] = float(doc.get("quantity", 0))
+    doc["received_qty"] = float(doc.get("quantity", 0))
+    doc["required_qty"] = float(doc.get("quantity", 0))
+    doc["purchase_date"] = doc.get("created_at", "")[:10] if doc.get("created_at") else ""
+    doc["purchase_price"] = float(doc.get("buy_price", 0))
+    return doc
+
+
+@api_router.get("/tires", response_model=List[TireOut])
+async def list_tires(
+    user: dict = Depends(get_current_user),
+    size: Optional[str] = None,
+    brand: Optional[str] = None,
+    season: Optional[str] = None,
+    search: Optional[str] = None,
+):
+    q: dict = {}
+    if size:
+        q["size"] = {"$regex": re.escape(size), "$options": "i"}
+    if brand:
+        q["brand"] = {"$regex": re.escape(brand), "$options": "i"}
+    if season:
+        q["season"] = season
+    docs = await db.tires.find(q, {"_id": 0}).sort("brand", 1).to_list(5000)
+    if search:
+        s = search.lower()
+        docs = [d for d in docs if s in _tire_label(d).lower() or s in (d.get("note") or "").lower()]
+    for d in docs:
+        _tire_as_legacy(d)
+    return docs
+
+
+@api_router.post("/tires", response_model=TireOut)
+async def create_tire(data: TireIn, user: dict = Depends(get_current_user)):
+    doc = data.model_dump()
+    doc.update({
+        "id": str(uuid.uuid4()),
+        "brand": data.brand.strip(),
+        "model": (data.model or "").strip(),
+        "size": data.size.strip(),
+        "dot": (data.dot or "").strip(),
+        "note": (data.note or "").strip(),
+        "quantity": float(data.quantity),
+        "buy_price": float(data.buy_price),
+        "sell_price": float(data.sell_price),
+        "kdv_rate": float(data.kdv_rate),
+        "created_by": user["id"],
+        "created_by_name": user["name"],
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    })
+    await db.tires.insert_one(doc)
+    doc.pop("_id", None)
+    _tire_as_legacy(doc)
+    await log_activity(user, "create", "Stok", f"{_tire_label(doc)} / {doc['quantity']} adet")
+    # İlk kayıt bir "giriş" hareketidir
+    await db.stock_movements.insert_one({
+        "id": str(uuid.uuid4()),
+        "tire_id": doc["id"],
+        "tire_label": _tire_label(doc),
+        "delta": float(doc["quantity"]),
+        "before": 0.0,
+        "after": float(doc["quantity"]),
+        "reason": "ilk-kayit",
+        "note": "Ürün kaydı oluşturuldu",
+        "date": now_iso()[:10],
+        "created_by": user["id"],
+        "created_by_name": user["name"],
+        "created_at": now_iso(),
+    })
+    return doc
+
+
+@api_router.put("/tires/{tire_id}", response_model=TireOut)
+async def update_tire(tire_id: str, data: TireIn, user: dict = Depends(get_current_user)):
+    before = await db.tires.find_one({"id": tire_id}, {"_id": 0})
+    if not before:
+        raise HTTPException(404, "Lastik bulunamadı")
+    update = {
+        "brand": data.brand.strip(),
+        "model": (data.model or "").strip(),
+        "size": data.size.strip(),
+        "season": data.season,
+        "dot": (data.dot or "").strip(),
+        "note": (data.note or "").strip(),
+        "quantity": float(data.quantity),
+        "buy_price": float(data.buy_price),
+        "sell_price": float(data.sell_price),
+        "kdv_rate": float(data.kdv_rate),
+        "updated_at": now_iso(),
+    }
+    await db.tires.update_one({"id": tire_id}, {"$set": update})
+    doc = await db.tires.find_one({"id": tire_id}, {"_id": 0})
+    _tire_as_legacy(doc)
+    # Miktar değiştiyse hareket logu
+    if float(before.get("quantity", 0)) != float(update["quantity"]):
+        delta = float(update["quantity"]) - float(before.get("quantity", 0))
+        await db.stock_movements.insert_one({
+            "id": str(uuid.uuid4()),
+            "tire_id": tire_id,
+            "tire_label": _tire_label(doc),
+            "delta": delta,
+            "before": float(before.get("quantity", 0)),
+            "after": float(update["quantity"]),
+            "reason": "duzenleme",
+            "note": "Düzenleme ile değişti",
+            "date": now_iso()[:10],
+            "created_by": user["id"],
+            "created_by_name": user["name"],
+            "created_at": now_iso(),
+        })
+    await log_activity(user, "update", "Stok", f"{_tire_label(doc)}")
+    return doc
+
+
+@api_router.delete("/tires/{tire_id}")
+async def delete_tire(tire_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.tires.find_one({"id": tire_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Lastik bulunamadı")
+    await db.tires.delete_one({"id": tire_id})
+    await log_activity(user, "delete", "Stok", _tire_label(doc))
+    return {"ok": True}
+
+
+@api_router.post("/tires/{tire_id}/movement")
+async def tire_movement(tire_id: str, data: TireMovementIn, user: dict = Depends(get_current_user)):
+    doc = await db.tires.find_one({"id": tire_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Lastik bulunamadı")
+    before = float(doc.get("quantity", 0))
+    after = before + float(data.delta)
+    if after < 0:
+        raise HTTPException(400, f"Stok eksiye düşemez. Mevcut: {before}, denenen çıkış: {abs(data.delta)}")
+    await db.tires.update_one({"id": tire_id}, {"$set": {"quantity": after, "updated_at": now_iso()}})
+    mv = {
+        "id": str(uuid.uuid4()),
+        "tire_id": tire_id,
+        "tire_label": _tire_label(doc),
+        "delta": float(data.delta),
+        "before": before,
+        "after": after,
+        "reason": data.reason,
+        "note": (data.note or "").strip(),
+        "date": data.date or now_iso()[:10],
+        "created_by": user["id"],
+        "created_by_name": user["name"],
+        "created_at": now_iso(),
+    }
+    await db.stock_movements.insert_one(mv)
+    await log_activity(user, "movement", "Stok",
+                       f"{_tire_label(doc)}: {before} → {after} ({'+' if data.delta>0 else ''}{data.delta}, {data.reason})")
+    mv.pop("_id", None)
+    return mv
+
+
+@api_router.get("/tires/{tire_id}/movements")
+async def list_tire_movements(tire_id: str, user: dict = Depends(get_current_user)):
+    return await db.stock_movements.find({"tire_id": tire_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+
+# ---- Legacy Stok uç noktaları (geriye dönük uyumluluk — artık lastik tablosuna yönlendirilir) ----
+@api_router.get("/inventory")
+async def list_inventory_legacy(user: dict = Depends(get_current_user)):
+    docs = await db.tires.find({}, {"_id": 0}).sort("brand", 1).to_list(5000)
+    for d in docs:
+        _tire_as_legacy(d)
+    return docs
+
+
 # ---- Harcamalar ----
 @api_router.get("/spendings", response_model=List[SpendingOut])
 async def list_spendings(category: Optional[SpendingCategory] = None, user: dict = Depends(get_current_user)):
@@ -1009,19 +1232,34 @@ def _render_low_stock_email(user_name: str, items: list) -> str:
 
 
 @api_router.get("/inventory/alerts")
-async def inventory_alerts(user: dict = Depends(get_current_user)):
-    """Kalan miktarı > 0 olan (eksik) ürünler."""
-    all_items = await db.inventory.find({}, {"_id": 0}).to_list(5000)
-    low = [i for i in all_items if float(i.get("remaining_qty", 0)) > 0]
-    low.sort(key=lambda x: float(x.get("remaining_qty", 0)), reverse=True)
-    return {"count": len(low), "items": low}
+async def inventory_alerts(user: dict = Depends(get_current_user), threshold: float = 4):
+    """Stok seviyesi eşiğin altında olan lastikler (varsayılan: 4 adet)."""
+    all_items = await db.tires.find({}, {"_id": 0}).to_list(5000)
+    low = []
+    for d in all_items:
+        if float(d.get("quantity", 0)) < threshold:
+            _tire_as_legacy(d)
+            # UI'nin low-stock banner'ı 'remaining_qty > 0' bekliyor, biz 'eksik miktarı' pozitif gösterelim
+            d["remaining_qty"] = max(0.0, threshold - float(d.get("quantity", 0)))
+            low.append(d)
+    low.sort(key=lambda x: float(x.get("quantity", 0)))
+    return {"count": len(low), "items": low, "threshold": threshold}
 
 
 @api_router.post("/inventory/send-low-stock-email")
 async def send_low_stock_email(user: dict = Depends(get_current_user)):
     """Düşük stok uyarısını kullanıcıların kayıtlı bildirim e-postalarına gönderir."""
-    all_items = await db.inventory.find({}, {"_id": 0}).to_list(5000)
-    low = [i for i in all_items if float(i.get("remaining_qty", 0)) > 0]
+    threshold = 4
+    all_items = await db.tires.find({}, {"_id": 0}).to_list(5000)
+    low = []
+    for d in all_items:
+        if float(d.get("quantity", 0)) < threshold:
+            low.append({
+                "product_name": _tire_label(d),
+                "required_qty": threshold,
+                "received_qty": float(d.get("quantity", 0)),
+                "remaining_qty": max(0.0, threshold - float(d.get("quantity", 0))),
+            })
     if not low:
         raise HTTPException(400, "Düşük stok bulunmuyor")
 
@@ -1480,6 +1718,496 @@ async def summary(user: dict = Depends(get_current_user)):
         "total_vat": round(sum(d.get("vat_amount", 0) for d in invs), 2),
         "open_todos": len(todos),
     }
+
+# -----------------------------
+# ŞAMPİYON — AI Asistanı (Claude Sonnet + Araçlar + Ses)
+# -----------------------------
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+SAMPIYON_MODEL_PROVIDER = "anthropic"
+SAMPIYON_MODEL_NAME = "claude-sonnet-5-5"
+
+SAMPIYON_SYSTEM_PROMPT = """Sen Karivo Otomotiv'in Türkçe konuşan AI asistanı 'Şampiyon'sun.
+
+Rol: Küçük bir lastik firmasında stok, satış, müşteri (cari) ve finans verilerini anlamak ve yönetmek için kullanıcıya yardım edersin.
+Veri: Araçları kullanarak gerçek veritabanına erişebilirsin — tahmin yürütme, sadece araç sonuçlarına dayan.
+Dil: Her zaman net, kısa ve profesyonel Türkçe cevap ver. Sayıları ₺ ile biçimlendir.
+Değişiklik yapan araçlar: Veritabanını değiştiren araçları (ekle, güncelle, hareket) ÇAĞIRMADAN ÖNCE kullanıcıya ne yapacağını özetle ve onay iste. Kullanıcı 'evet', 'onayla', 'tamam' derse işlemi gerçekleştir. Belirsizlik varsa önce arama/sorgulama araçlarını kullan.
+Kısıtlar: Satış modülü şu an yok — kullanıcı 'satış' derse 'satış modülü henüz eklenmedi' de ama Gelirler kaydı önerebilirsin.
+Çıktı: Araç sonuçlarını kullanıcı dostu özetle. Lastik listelerinde en fazla 10 satır göster; daha fazlası varsa 'toplam X kayıt' olarak belirt."""
+
+
+SAMPIYON_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_tires",
+            "description": "Lastik stokundan ebat, marka, mevsim veya serbest metin ile ara. Örn: '205/55 R16' lastikleri bulmak için size='205/55 R16'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "size": {"type": "string", "description": "Lastik ebadı, ör: 205/55 R16"},
+                    "brand": {"type": "string", "description": "Marka adı, ör: Michelin"},
+                    "season": {"type": "string", "enum": ["yaz", "kis", "4mevsim"]},
+                    "search": {"type": "string", "description": "Serbest metin aramak için"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_stock_summary",
+            "description": "Toplam stok adedi, toplam alış ve satış değerini döner.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_finance_summary",
+            "description": "Belirli tarih aralığı için gelir, gider, kâr, KDV ve fatura toplamlarını döner. Tarihler YYYY-MM-DD formatında. Varsayılan: tüm zamanlar.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_date": {"type": "string"},
+                    "end_date": {"type": "string"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_cariler",
+            "description": "Müşteri/tedarikçi (cari) kayıtlarını, bakiye özetleriyle birlikte listeler. Arama için 'search' kullanılabilir.",
+            "parameters": {
+                "type": "object",
+                "properties": {"search": {"type": "string"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_tire",
+            "description": "YENİ bir lastik ürünü ekler. ÖNCE kullanıcıdan onay almalısın. buy_price = KDV hariç alış fiyatı.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "brand": {"type": "string"},
+                    "model": {"type": "string"},
+                    "size": {"type": "string", "description": "Örn: 205/55 R16"},
+                    "season": {"type": "string", "enum": ["yaz", "kis", "4mevsim"]},
+                    "dot": {"type": "string"},
+                    "quantity": {"type": "number"},
+                    "buy_price": {"type": "number"},
+                    "sell_price": {"type": "number"},
+                    "kdv_rate": {"type": "number", "default": 20},
+                    "confirmed": {"type": "boolean", "description": "Kullanıcı açıkça onayladıysa true"},
+                },
+                "required": ["brand", "size", "quantity", "confirmed"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_tire_stock",
+            "description": "Mevcut bir lastiğin stok adedini değiştirir (giriş/çıkış hareketi). ÖNCE kullanıcıdan onay almalısın. delta pozitif=giriş, negatif=çıkış.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tire_id": {"type": "string"},
+                    "delta": {"type": "number"},
+                    "reason": {"type": "string", "enum": ["alis", "satis", "iade", "sayim-duzeltme", "fire", "diger"]},
+                    "note": {"type": "string"},
+                    "confirmed": {"type": "boolean"},
+                },
+                "required": ["tire_id", "delta", "reason", "confirmed"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_income",
+            "description": "Gelir kaydı oluşturur. Örn: nakit satış tahsilatı. ÖNCE kullanıcıdan onay almalısın.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string"},
+                    "amount": {"type": "number"},
+                    "date": {"type": "string", "description": "YYYY-MM-DD, boşsa bugün"},
+                    "confirmed": {"type": "boolean"},
+                },
+                "required": ["description", "amount", "confirmed"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_expense",
+            "description": "Gider kaydı oluşturur. ÖNCE kullanıcıdan onay almalısın.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string"},
+                    "amount": {"type": "number"},
+                    "date": {"type": "string"},
+                    "confirmed": {"type": "boolean"},
+                },
+                "required": ["description", "amount", "confirmed"],
+            },
+        },
+    },
+]
+
+
+async def _tool_search_tires(args: dict, user: dict) -> dict:
+    q: dict = {}
+    if args.get("size"):
+        q["size"] = {"$regex": re.escape(args["size"]), "$options": "i"}
+    if args.get("brand"):
+        q["brand"] = {"$regex": re.escape(args["brand"]), "$options": "i"}
+    if args.get("season"):
+        q["season"] = args["season"]
+    docs = await db.tires.find(q, {"_id": 0}).sort("brand", 1).to_list(500)
+    if args.get("search"):
+        s = args["search"].lower()
+        docs = [d for d in docs if s in _tire_label(d).lower()]
+    out = [{
+        "id": d["id"], "brand": d["brand"], "model": d.get("model", ""), "size": d["size"],
+        "season": d.get("season"), "dot": d.get("dot", ""), "quantity": d.get("quantity", 0),
+        "buy_price": d.get("buy_price", 0), "sell_price": d.get("sell_price", 0),
+    } for d in docs]
+    return {"count": len(out), "items": out[:50]}
+
+
+async def _tool_get_stock_summary(args: dict, user: dict) -> dict:
+    docs = await db.tires.find({}, {"_id": 0}).to_list(5000)
+    total_qty = sum(float(d.get("quantity", 0)) for d in docs)
+    total_buy = sum(float(d.get("quantity", 0)) * float(d.get("buy_price", 0)) for d in docs)
+    total_sell = sum(float(d.get("quantity", 0)) * float(d.get("sell_price", 0)) for d in docs)
+    return {
+        "sku_count": len(docs),
+        "total_quantity": round(total_qty, 2),
+        "total_buy_value_tl": round(total_buy, 2),
+        "total_sell_value_tl": round(total_sell, 2),
+        "potential_margin_tl": round(total_sell - total_buy, 2),
+    }
+
+
+async def _tool_get_finance_summary(args: dict, user: dict) -> dict:
+    q: dict = {}
+    if args.get("start_date") or args.get("end_date"):
+        q["date"] = {}
+        if args.get("start_date"):
+            q["date"]["$gte"] = args["start_date"]
+        if args.get("end_date"):
+            q["date"]["$lte"] = args["end_date"]
+    inc = await db.incomes.find(q, {"_id": 0, "amount": 1}).to_list(10000)
+    exp = await db.expenses.find(q, {"_id": 0, "amount": 1}).to_list(10000)
+    invs = await db.invoices.find(q, {"_id": 0, "amount": 1, "vat_amount": 1}).to_list(10000)
+    return {
+        "range": {"start": args.get("start_date"), "end": args.get("end_date")},
+        "income_tl": round(sum(d["amount"] for d in inc), 2),
+        "expense_tl": round(sum(d["amount"] for d in exp), 2),
+        "profit_tl": round(sum(d["amount"] for d in inc) - sum(d["amount"] for d in exp), 2),
+        "invoice_total_tl": round(sum(d["amount"] for d in invs), 2),
+        "vat_total_tl": round(sum(d.get("vat_amount", 0) for d in invs), 2),
+        "income_count": len(inc),
+        "expense_count": len(exp),
+    }
+
+
+async def _tool_list_cariler(args: dict, user: dict) -> dict:
+    docs = await db.cariler.find({}, {"_id": 0}).sort("name", 1).to_list(1000)
+    for d in docs:
+        await _attach_cari_totals(d)
+    if args.get("search"):
+        s = args["search"].lower()
+        docs = [d for d in docs if s in d["name"].lower()]
+    out = [{"id": d["id"], "name": d["name"], "phone": d.get("phone", ""),
+            "total_alacak": d["total_alacak"], "total_odeme": d.get("total_odeme", 0),
+            "remaining_alacak": d.get("remaining_alacak", 0), "total_borc": d["total_borc"], "net": d["net"]}
+           for d in docs]
+    return {"count": len(out), "items": out[:50]}
+
+
+async def _tool_add_tire(args: dict, user: dict) -> dict:
+    if not args.get("confirmed"):
+        return {"error": "Onay gerekli", "hint": "Kullanıcıdan açık onay (ör: 'evet', 'ekle') aldıktan sonra confirmed=true ile tekrar çağır."}
+    tire = TireIn(
+        brand=args["brand"],
+        model=args.get("model", ""),
+        size=args["size"],
+        season=args.get("season", "4mevsim"),
+        dot=args.get("dot", ""),
+        quantity=float(args.get("quantity", 0)),
+        buy_price=float(args.get("buy_price", 0)),
+        sell_price=float(args.get("sell_price", 0)),
+        kdv_rate=float(args.get("kdv_rate", 20)),
+    )
+    doc = await create_tire(tire, user=user)  # type: ignore
+    return {"ok": True, "tire_id": doc["id"], "label": _tire_label(doc), "quantity": doc["quantity"]}
+
+
+async def _tool_update_tire_stock(args: dict, user: dict) -> dict:
+    if not args.get("confirmed"):
+        return {"error": "Onay gerekli"}
+    data = TireMovementIn(delta=float(args["delta"]), reason=args["reason"], note=args.get("note", ""))
+    try:
+        mv = await tire_movement(args["tire_id"], data, user=user)  # type: ignore
+        return {"ok": True, "before": mv["before"], "after": mv["after"], "delta": mv["delta"]}
+    except HTTPException as e:
+        return {"error": str(e.detail)}
+
+
+async def _tool_add_income(args: dict, user: dict) -> dict:
+    if not args.get("confirmed"):
+        return {"error": "Onay gerekli"}
+    doc = await create_income(IncomeIn(description=args["description"], amount=float(args["amount"]), date=args.get("date")), user=user)  # type: ignore
+    return {"ok": True, "id": doc["id"], "amount": doc["amount"]}
+
+
+async def _tool_add_expense(args: dict, user: dict) -> dict:
+    if not args.get("confirmed"):
+        return {"error": "Onay gerekli"}
+    doc = await create_expense(ExpenseIn(description=args["description"], amount=float(args["amount"]), date=args.get("date")), user=user)  # type: ignore
+    return {"ok": True, "id": doc["id"], "amount": doc["amount"]}
+
+
+SAMPIYON_TOOL_HANDLERS = {
+    "search_tires": _tool_search_tires,
+    "get_stock_summary": _tool_get_stock_summary,
+    "get_finance_summary": _tool_get_finance_summary,
+    "list_cariler": _tool_list_cariler,
+    "add_tire": _tool_add_tire,
+    "update_tire_stock": _tool_update_tire_stock,
+    "add_income": _tool_add_income,
+    "add_expense": _tool_add_expense,
+}
+
+
+class SampiyonChatIn(BaseModel):
+    message: str
+    history: List[dict] = []  # [{"role": "user"|"assistant", "content": "..."}]
+
+
+@api_router.post("/sampiyon/chat")
+async def sampiyon_chat(data: SampiyonChatIn, user: dict = Depends(get_current_user)):
+    """Şampiyon ile tek atışlık sohbet (non-stream, araç çağrımı ile)."""
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(500, "AI anahtarı yapılandırılmamış")
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+    except Exception as e:
+        raise HTTPException(500, f"AI kütüphanesi yüklü değil: {e}")
+
+    session_id = f"sampiyon-{user['id']}"
+    chat = (
+        LlmChat(api_key=EMERGENT_LLM_KEY, session_id=session_id, system_message=SAMPIYON_SYSTEM_PROMPT)
+        .with_model(SAMPIYON_MODEL_PROVIDER, SAMPIYON_MODEL_NAME)
+        .with_tools(SAMPIYON_TOOLS, tool_choice="auto")
+    )
+    # Geçmişi yükle — basitçe son 10 mesaj
+    for h in data.history[-10:]:
+        if h.get("role") == "user":
+            chat.add_user_message(h.get("content", ""))
+        elif h.get("role") == "assistant":
+            chat.add_assistant_message(h.get("content", ""))
+
+    tool_trace: List[dict] = []
+    try:
+        response = await chat.send_message_with_tools(UserMessage(text=data.message))
+        safety = 0
+        while getattr(response, "tool_calls", None) and safety < 6:
+            safety += 1
+            for tc in response.tool_calls:
+                handler = SAMPIYON_TOOL_HANDLERS.get(tc.name)
+                if not handler:
+                    result = {"error": f"Bilinmeyen araç: {tc.name}"}
+                else:
+                    try:
+                        result = await handler(tc.arguments or {}, user)
+                    except Exception as e:
+                        result = {"error": str(e)}
+                tool_trace.append({"name": tc.name, "arguments": tc.arguments, "result": result})
+                import json as _json
+                chat.add_tool_result(tc.id, _json.dumps(result, ensure_ascii=False, default=str))
+            response = await chat.send_message_with_tools()
+        text = getattr(response, "content", None) or ""
+    except Exception as e:
+        logger.exception("Şampiyon chat hatası")
+        raise HTTPException(500, f"AI hatası: {e}")
+
+    await log_activity(user, "chat", "Sampiyon", f"Mesaj: {data.message[:120]}")
+    return {"reply": text, "tool_trace": tool_trace}
+
+
+@api_router.post("/sampiyon/transcribe")
+async def sampiyon_transcribe(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Ses dosyasını Whisper ile Türkçe metne çevirir."""
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(500, "AI anahtarı yapılandırılmamış")
+    raw = await file.read()
+    if len(raw) > 25 * 1024 * 1024:
+        raise HTTPException(400, "Ses dosyası 25MB'ı aşamaz")
+    try:
+        from emergentintegrations.llm.openai import OpenAISpeechToText
+        stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
+        buf = io.BytesIO(raw)
+        buf.name = file.filename or "voice.webm"
+        resp = await stt.transcribe(file=buf, model="whisper-1", response_format="json", language="tr")
+        text = getattr(resp, "text", "") or ""
+    except Exception as e:
+        logger.exception("STT hatası")
+        raise HTTPException(500, f"Ses çevrilemedi: {e}")
+    return {"text": text}
+
+
+class SampiyonTTSIn(BaseModel):
+    text: str
+    voice: Optional[str] = "nova"
+
+
+@api_router.post("/sampiyon/tts")
+async def sampiyon_tts(data: SampiyonTTSIn, user: dict = Depends(get_current_user)):
+    """Metni OpenAI TTS ile sese çevirir, MP3 bayt akışı döner."""
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(500, "AI anahtarı yapılandırılmamış")
+    try:
+        from openai import AsyncOpenAI
+        from fastapi.responses import StreamingResponse
+        client = AsyncOpenAI(api_key=EMERGENT_LLM_KEY, base_url="https://integrations.emergentagent.com/llm")
+        async with client.audio.speech.with_streaming_response.create(
+            model="tts-1",
+            voice=data.voice or "nova",
+            input=data.text[:4000],
+        ) as resp:
+            audio_bytes = b""
+            async for chunk in resp.iter_bytes():
+                audio_bytes += chunk
+        return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/mpeg")
+    except Exception as e:
+        logger.exception("TTS hatası")
+        raise HTTPException(500, f"Ses üretilemedi: {e}")
+
+
+@api_router.post("/sampiyon/parse-tire-document")
+async def parse_tire_document(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Yüklenen Excel/PDF belgesinden Şampiyon ile lastik ürünlerini çıkarır.
+    Stok DEĞİŞTİRMEZ; önizleme için parsed listesini döner (frontend ayrıca import-confirm çağırır)."""
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(500, "AI anahtarı yapılandırılmamış")
+    raw = await file.read()
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(400, "Dosya 10MB'ı aşamaz")
+    filename = (file.filename or "").lower()
+
+    # 1) Metni çıkar
+    text = ""
+    if filename.endswith(".xlsx") or filename.endswith(".xlsm"):
+        from openpyxl import load_workbook
+        wb = load_workbook(io.BytesIO(raw), data_only=True)
+        for ws in wb.worksheets:
+            for r in ws.iter_rows(values_only=True):
+                row = [str(c).strip() if c is not None else "" for c in r]
+                if any(row):
+                    text += " | ".join(row) + "\n"
+    elif filename.endswith(".pdf"):
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(raw)) as pdf:
+            text = "\n".join((p.extract_text() or "") for p in pdf.pages)
+    else:
+        raise HTTPException(400, "Yalnızca .xlsx veya .pdf dosyaları desteklenir")
+
+    text = text.strip()
+    if not text:
+        raise HTTPException(400, "Dosyadan metin okunamadı. Taranmış PDF ise şimdilik desteklenmiyor.")
+    if len(text) > 25000:
+        text = text[:25000]
+
+    # 2) LLM ile çıkarım
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        import json as _json
+        extraction_prompt = """Aşağıdaki belge içeriğinden lastik ürünlerini çıkar. Her ürün için şu alanları doldur:
+- brand: Marka (zorunlu, ör: Michelin, Bridgestone)
+- model: Model adı (opsiyonel)
+- size: Ebat (ör: 205/55 R16) — zorunlu
+- season: "yaz", "kis" veya "4mevsim" (bilinmiyorsa "4mevsim")
+- dot: DOT/üretim yılı (opsiyonel)
+- quantity: Adet (sayı, bilinmiyorsa 1)
+- buy_price: Birim alış fiyatı TL (sayı, KDV hariç, varsa)
+- kdv_rate: KDV oranı (%20 varsayılan)
+- confidence: 0.0-1.0 arası güven değeri
+
+YANIT: Sadece geçerli JSON dizisi döndür. Başka hiçbir metin ekleme. Örnek:
+[{"brand":"Michelin","size":"205/55 R16","season":"yaz","quantity":4,"buy_price":2800,"kdv_rate":20,"confidence":0.9}]"""
+
+        chat = (
+            LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"extract-{uuid.uuid4()}",
+                    system_message=extraction_prompt)
+            .with_model(SAMPIYON_MODEL_PROVIDER, SAMPIYON_MODEL_NAME)
+        )
+        resp = await chat.send_message(UserMessage(text=f"Belge:\n{text}"))
+        reply = (getattr(resp, "content", None) or str(resp)).strip()
+
+        # JSON diziyi yakala
+        import re as _re
+        m = _re.search(r"\[.*\]", reply, _re.DOTALL)
+        if not m:
+            raise ValueError("AI yanıtında JSON dizisi bulunamadı")
+        items = _json.loads(m.group(0))
+        if not isinstance(items, list):
+            raise ValueError("Beklenen format: liste")
+
+        # Normalize et
+        clean = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            brand = str(it.get("brand", "")).strip()
+            size = str(it.get("size", "")).strip()
+            if not brand and not size:
+                continue
+            clean.append({
+                "brand": brand or "Belirtilmemiş",
+                "model": str(it.get("model", "") or "").strip(),
+                "size": size or "Belirtilmemiş",
+                "season": it.get("season") if it.get("season") in ("yaz", "kis", "4mevsim") else "4mevsim",
+                "dot": str(it.get("dot", "") or "").strip(),
+                "quantity": float(it.get("quantity", 1) or 1),
+                "buy_price": float(it.get("buy_price", 0) or 0),
+                "sell_price": float(it.get("sell_price", 0) or 0),
+                "kdv_rate": float(it.get("kdv_rate", 20) or 20),
+                "confidence": float(it.get("confidence", 0.5) or 0.5),
+                "selected": True,
+            })
+        return {"count": len(clean), "items": clean, "filename": file.filename}
+    except Exception as e:
+        logger.exception("Belge AI çıkarımı hatası")
+        raise HTTPException(500, f"Belge okunamadı: {e}")
+
+
+class TireImportConfirmIn(BaseModel):
+    items: List[TireIn]
+
+
+@api_router.post("/sampiyon/import-confirm")
+async def confirm_tire_import(data: TireImportConfirmIn, user: dict = Depends(get_current_user)):
+    """Onaylanmış lastik listesini stoğa ekler."""
+    if not data.items:
+        raise HTTPException(400, "Eklenecek lastik yok")
+    created = []
+    for t in data.items:
+        doc = await create_tire(t, user=user)  # type: ignore
+        created.append(doc)
+    await log_activity(user, "import", "Stok", f"{len(created)} lastik AI önizleme ile içe aktarıldı")
+    return {"count": len(created), "items": created}
+
 
 # -----------------------------
 # App setup
