@@ -6,7 +6,7 @@ Orijinal genel küçük-işletme uygulamasından (gelir/gider/fatura/stok/harcam
 - **Satışlar**: Lastik + cari + adet + indirim; stoktan otomatik düşer, gelir kaydı atar, cari bakiyesini günceller.
 - **Cariler**: Müşteri/tedarikçi alacak-borç takibi, "Gelen Ödeme Gir" özelliği.
 - **Gelir / Giderler**: Tek sayfada sekmeli birleşik görünüm.
-- **Şampiyon AI Asistan**: Yüzen widget; Claude Sonnet 5.5 (metin + tool-calling), OpenAI Whisper (STT), OpenAI TTS Onyx (erkek ses, speed 1.15). Lastik sorguları, finans özeti, araç çağırımı (search_tires, get_stock_summary, get_finance_summary, list_cariler, add_tire, update_tire_stock, add_income, add_expense, list_recent_sales). Yazıcı işlemler kullanıcı onayı (confirmed=true) ister.
+- **Şampiyon AI Asistan**: Yüzen widget; Gemini 3 Flash (metin + tool-calling + streaming), OpenAI Whisper (STT), gpt-4o-mini-tts (ash, doğal Türkçe erkek ton). Lastik sorguları, finans özeti, araç çağırımı (search_tires, get_stock_summary, get_finance_summary, list_cariler, add_tire, update_tire_stock, add_income, add_expense, list_recent_sales). Yazıcı işlemler kullanıcı onayı (confirmed=true) ister.
 - **Belge Yükleme (AI)**: Excel/PDF fatura yükle → LLM lastik verisi çıkarır → onay ekranı → stoğa işleme.
 - **E-posta**: Resend ile düşük stok uyarısı + aylık rapor (`.emergent/crons.yml`, her ayın 1'i 09:00 UTC).
 
@@ -30,6 +30,7 @@ Tüm UI ve iletişim **Türkçe**.
 `/app/memory/test_credentials.md` — murat@karivo.local / Murat2026!, ozkan@karivo.local / Ozkan2026!
 
 ## Changelog
+- **2026-10 (iter-11)**: Şampiyon tam yetkili + hızlı: Model Gemini 3 Flash (`gemini-3-flash-preview`), SSE streaming (`/api/sampiyon/chat/stream`). Yeni araçlar: add_spending, add_todo, complete_todo, add_cari, add_cari_transaction (cari_name çözümleme), add_invoice, update_tire, create_sale, list_records, delete_record. Ekleme/güncelleme onaysız; sadece satış + silme onay ister. TTS: gpt-4o-mini-tts (voice ash, Türkçe samimi erkek talimatı). Konuşurken tıklama/tuş/yazma → anında susar. Sesli komutta otomatik okuma, yazılıda yok. Şampiyon veri değiştirince açık sayfa otomatik yenilenir (`karivo:data-changed`). Test: backend 15/15 + frontend PASS.
 - **2026-10 (bu iterasyon)**: Şampiyon kritik hata düzeltmesi — `chat.add_assistant_message` AttributeError ile her takip mesajı 500 veriyordu; geçmiş artık sanitize edilip `LlmChat(initial_messages=...)` ile yükleniyor. Sesli komut stale-state düzeltildi (history snapshot + autoSpeak). TTS hızı 1.15 (backend clamp 0.5-2.0). Sesli komut yanıtı otomatik okunuyor (autoplay engellenirse toast). SEC-001: tüm upload endpoint'lerine limit (10MB, transcribe 25MB), Excel 2000 satır / PDF 100 sayfa limiti. Test: iter-10, backend 4/4 + e2e frontend PASS.
 - Daha eski: iter 1-9 — pivot MVP (lastik stoku, cariler, satışlar, birleşik Gelir/Gider, Şampiyon widget, Resend crons).
 
