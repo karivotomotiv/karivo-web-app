@@ -1,5 +1,5 @@
 import { NavLink, Outlet, Navigate } from "react-router-dom";
-import { useState } from "react";
+import { useState, useEffect, Fragment } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import SettingsDialog from "@/components/SettingsDialog";
@@ -37,7 +37,13 @@ const NAV = [
 export default function Layout() {
   const { user, loading, logout } = useAuth();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
+  useEffect(() => {
+    const onChange = () => setRefreshKey((k) => k + 1);
+    window.addEventListener("karivo:data-changed", onChange);
+    return () => window.removeEventListener("karivo:data-changed", onChange);
+  }, []);
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
@@ -131,7 +137,7 @@ export default function Layout() {
           </div>
         </div>
         <div className="p-8">
-          <Outlet />
+          <Fragment key={refreshKey}><Outlet /></Fragment>
         </div>
       </main>
 

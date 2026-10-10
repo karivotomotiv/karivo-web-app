@@ -1873,17 +1873,20 @@ async def summary(user: dict = Depends(get_current_user)):
 # ŞAMPİYON — AI Asistanı (Claude Sonnet + Araçlar + Ses)
 # -----------------------------
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
-SAMPIYON_MODEL_PROVIDER = "anthropic"
-SAMPIYON_MODEL_NAME = "claude-sonnet-5-5"
+SAMPIYON_MODEL_PROVIDER = "gemini"
+SAMPIYON_MODEL_NAME = "gemini-3-flash-preview"
 
-SAMPIYON_SYSTEM_PROMPT = """Sen Karivo Otomotiv'in AI asistanı Şampiyon'sun.
+SAMPIYON_SYSTEM_PROMPT = """Sen Karivo Otomotiv'in AI asistanı Şampiyon'sun. Uygulamadaki HER işlemi yapmaya tam yetkilisin.
 
-Kişilik: Dost canlısı, samimi, enerjik bir ekip arkadaşı gibi konuş. Resmi dilden uzak dur — "merhaba efendim" yerine "selam patron", "lütfen bekleyiniz" yerine "bi saniye bakıyorum", "işlem başarıyla tamamlandı" yerine "tamamdır, yaptım" tarzında ol. Yeri geldiğinde kısa espri yapabilir, 🏆 👍 gibi bir iki emoji atabilirsin ama abartma.
-Rol: Lastik firmasında stok, satış, cari ve finansı birlikte takip ediyoruz. Araçları kullanarak gerçek veriye bak, tahmin yürütme.
-Dil: Türkçe, kısa ve net. Sayıları ₺ ile biçimlendir. Konuşma dili kullan, uzun paragraflardan kaçın.
-Onay akışı: Veritabanını değiştiren araçları (ekle, güncelle, satış, hareket) ÇAĞIRMADAN ÖNCE ne yapacağını özetle: "Şöyle yapıyorum, onaylıyor musun?" Kullanıcı "evet / tamam / olur / hadi" derse `confirmed=true` ile aracı çağır. "Hayır / dur / vazgeç" derse yapma.
-Hata: Bir şey ters giderse dürüstçe söyle — süsleme, "üzgünüm efendim" yapma. "Yetersiz stok var, 3 adet lazım ama 2 var" gibi direkt söyle.
-Çıktı: 10 satırdan uzun liste varsa 'toplam X kayıt, ilk 10 tanesi:' şeklinde özetle."""
+Kişilik: Samimi, enerjik ekip arkadaşı. "selam patron", "tamamdır, yaptım", "bi bakıyorum" tarzı konuş. Emoji kullanma.
+Rol: Lastik stoku, satışlar, cariler (alacak/borç/gelen ödeme), gelir, gider, faturalar, harcamalar (şirket ve kişisel), yapılacaklar. Araçlarla gerçek veriye bak, asla tahmin yürütme veya veri uydurma.
+YETKİ: Kullanıcı bir şey yapmanı isterse (ekle, gir, kaydet, güncelle, tamamla) HEMEN ilgili aracı çağır ve yap — onay sorma, "yapabilir miyim" deme. Eksik zorunlu bilgi varsa (ör. tutar) sadece onu kısaca sor.
+ONAY SADECE İKİ DURUMDA: (1) Satış oluşturma (create_sale), (2) Herhangi bir kaydı silme (delete_record). Bunlarda önce tek cümleyle özetle ve "onaylıyor musun?" diye sor; kullanıcı evet/tamam/olur derse confirmed=true ile çağır.
+Kimlik çözme: Cari adı söylenirse cari_name ile gönder. Lastik için önce search_tires ile id bul. Silme/tamamlama için önce list_records ile id bul.
+"Harcama" denirse add_spending kullan (kategori belirtilmezse company). "Gider" denirse add_expense kullan.
+Dil: Türkçe, ÇOK kısa ve net (1-3 cümle). Sayıları ₺ ile yaz. Markdown başlık/tablo kullanma; gerekirse kısa liste.
+Hata: Ters giderse direkt söyle: "3 adet lazım ama stokta 2 var" gibi.
+Uzun listelerde 'toplam X kayıt, ilk 10:' şeklinde özetle."""
 
 
 SAMPIYON_TOOLS = [
@@ -1940,7 +1943,7 @@ SAMPIYON_TOOLS = [
         "type": "function",
         "function": {
             "name": "add_tire",
-            "description": "YENİ bir lastik ürünü ekler. ÖNCE kullanıcıdan onay almalısın. buy_price = KDV hariç alış fiyatı.",
+            "description": "YENİ bir lastik ürünü ekler (onay gerekmez, direkt yap). buy_price = KDV hariç alış fiyatı.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1953,9 +1956,8 @@ SAMPIYON_TOOLS = [
                     "buy_price": {"type": "number"},
                     "sell_price": {"type": "number"},
                     "kdv_rate": {"type": "number", "default": 20},
-                    "confirmed": {"type": "boolean", "description": "Kullanıcı açıkça onayladıysa true"},
                 },
-                "required": ["brand", "size", "quantity", "confirmed"],
+                "required": ["brand", "size", "quantity"],
             },
         },
     },
@@ -1963,7 +1965,7 @@ SAMPIYON_TOOLS = [
         "type": "function",
         "function": {
             "name": "update_tire_stock",
-            "description": "Mevcut bir lastiğin stok adedini değiştirir (giriş/çıkış hareketi). ÖNCE kullanıcıdan onay almalısın. delta pozitif=giriş, negatif=çıkış.",
+            "description": "Mevcut bir lastiğin stok adedini değiştirir (giriş/çıkış hareketi). Direkt yap. delta pozitif=giriş, negatif=çıkış.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1971,9 +1973,8 @@ SAMPIYON_TOOLS = [
                     "delta": {"type": "number"},
                     "reason": {"type": "string", "enum": ["alis", "satis", "iade", "sayim-duzeltme", "fire", "diger"]},
                     "note": {"type": "string"},
-                    "confirmed": {"type": "boolean"},
                 },
-                "required": ["tire_id", "delta", "reason", "confirmed"],
+                "required": ["tire_id", "delta", "reason"],
             },
         },
     },
@@ -1981,16 +1982,15 @@ SAMPIYON_TOOLS = [
         "type": "function",
         "function": {
             "name": "add_income",
-            "description": "Gelir kaydı oluşturur. Örn: nakit satış tahsilatı. ÖNCE kullanıcıdan onay almalısın.",
+            "description": "Gelir kaydı oluşturur. Direkt yap.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "description": {"type": "string"},
                     "amount": {"type": "number"},
                     "date": {"type": "string", "description": "YYYY-MM-DD, boşsa bugün"},
-                    "confirmed": {"type": "boolean"},
                 },
-                "required": ["description", "amount", "confirmed"],
+                "required": ["description", "amount"],
             },
         },
     },
@@ -1998,16 +1998,15 @@ SAMPIYON_TOOLS = [
         "type": "function",
         "function": {
             "name": "add_expense",
-            "description": "Gider kaydı oluşturur. ÖNCE kullanıcıdan onay almalısın.",
+            "description": "Gelir/Giderler sayfasındaki Gider kaydı oluşturur. Direkt yap.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "description": {"type": "string"},
                     "amount": {"type": "number"},
                     "date": {"type": "string"},
-                    "confirmed": {"type": "boolean"},
                 },
-                "required": ["description", "amount", "confirmed"],
+                "required": ["description", "amount"],
             },
         },
     },
@@ -2120,8 +2119,6 @@ async def _tool_list_cariler(args: dict, user: dict) -> dict:
 
 
 async def _tool_add_tire(args: dict, user: dict) -> dict:
-    if not args.get("confirmed"):
-        return {"error": "Onay gerekli", "hint": "Kullanıcıdan açık onay (ör: 'evet', 'ekle') aldıktan sonra confirmed=true ile tekrar çağır."}
     tire = TireIn(
         brand=args["brand"],
         model=args.get("model", ""),
@@ -2138,8 +2135,6 @@ async def _tool_add_tire(args: dict, user: dict) -> dict:
 
 
 async def _tool_update_tire_stock(args: dict, user: dict) -> dict:
-    if not args.get("confirmed"):
-        return {"error": "Onay gerekli"}
     data = TireMovementIn(delta=float(args["delta"]), reason=args["reason"], note=args.get("note", ""))
     try:
         mv = await tire_movement(args["tire_id"], data, user=user)  # type: ignore
@@ -2149,17 +2144,220 @@ async def _tool_update_tire_stock(args: dict, user: dict) -> dict:
 
 
 async def _tool_add_income(args: dict, user: dict) -> dict:
-    if not args.get("confirmed"):
-        return {"error": "Onay gerekli"}
     doc = await create_income(IncomeIn(description=args["description"], amount=float(args["amount"]), date=args.get("date")), user=user)  # type: ignore
     return {"ok": True, "id": doc["id"], "amount": doc["amount"]}
 
 
 async def _tool_add_expense(args: dict, user: dict) -> dict:
-    if not args.get("confirmed"):
-        return {"error": "Onay gerekli"}
     doc = await create_expense(ExpenseIn(description=args["description"], amount=float(args["amount"]), date=args.get("date")), user=user)  # type: ignore
     return {"ok": True, "id": doc["id"], "amount": doc["amount"]}
+
+
+async def _resolve_cari(args: dict) -> dict:
+    if args.get("cari_id"):
+        doc = await db.cariler.find_one({"id": args["cari_id"]}, {"_id": 0})
+        if doc:
+            return doc
+    name = (args.get("cari_name") or "").strip()
+    if not name:
+        raise HTTPException(400, "Cari adı veya id gerekli")
+    exact = await db.cariler.find_one({"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}, {"_id": 0})
+    if exact:
+        return exact
+    matches = await db.cariler.find({"name": {"$regex": re.escape(name), "$options": "i"}}, {"_id": 0}).to_list(10)
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise HTTPException(404, f"'{name}' adında cari bulunamadı")
+    raise HTTPException(400, "Birden fazla cari eşleşti: " + ", ".join(m["name"] for m in matches))
+
+
+def _need_confirm(args: dict, summary: str) -> Optional[dict]:
+    if args.get("confirmed"):
+        return None
+    return {"error": "Onay gerekli", "hint": f"Kullanıcıya şunu sor ve onaylarsa confirmed=true ile tekrar çağır: {summary}"}
+
+
+async def _tool_add_spending(args: dict, user: dict) -> dict:
+    data = SpendingIn(category=args.get("category") or "company", name=args["name"],
+                      amount=float(args["amount"]), date=args.get("date"))
+    doc = await create_spending(data, user=user)  # type: ignore
+    return {"ok": True, "id": doc["id"], "category": doc["category"], "amount": doc["amount"]}
+
+
+async def _tool_add_todo(args: dict, user: dict) -> dict:
+    doc = await create_todo(TodoIn(title=args["title"], note=args.get("note", "")), user=user)  # type: ignore
+    return {"ok": True, "id": doc["id"], "title": doc["title"]}
+
+
+async def _tool_complete_todo(args: dict, user: dict) -> dict:
+    doc = await update_todo(args["todo_id"], TodoUpdate(completed=bool(args.get("completed", True))), user=user)  # type: ignore
+    return {"ok": True, "title": doc["title"], "completed": doc["completed"]}
+
+
+async def _tool_add_cari(args: dict, user: dict) -> dict:
+    doc = await create_cari(CariIn(name=args["name"], phone=args.get("phone", ""), address=args.get("address", ""),
+                                   note=args.get("note", "")), user=user)  # type: ignore
+    return {"ok": True, "id": doc["id"], "name": doc["name"]}
+
+
+async def _tool_add_cari_transaction(args: dict, user: dict) -> dict:
+    cari = await _resolve_cari(args)
+    data = CariTxIn(type=args["type"], amount=float(args["amount"]), description=args.get("description", ""), date=args.get("date"))
+    doc = await create_cari_tx(cari["id"], data, user=user)  # type: ignore
+    await _attach_cari_totals(cari)
+    return {"ok": True, "cari": cari["name"], "type": doc["type"], "amount": doc["amount"],
+            "remaining_alacak": cari["remaining_alacak"], "total_borc": cari["total_borc"], "net": cari["net"]}
+
+
+async def _tool_add_invoice(args: dict, user: dict) -> dict:
+    doc = await create_invoice(InvoiceIn(description=args["description"], amount=float(args["amount"]), date=args.get("date")), user=user)  # type: ignore
+    return {"ok": True, "id": doc["id"], "amount": doc["amount"], "vat_amount": doc["vat_amount"]}
+
+
+async def _tool_update_tire(args: dict, user: dict) -> dict:
+    tire = await db.tires.find_one({"id": args["tire_id"]}, {"_id": 0})
+    if not tire:
+        return {"error": "Lastik bulunamadı"}
+    fields = {k: tire.get(k) for k in TireIn.model_fields}
+    for k in ("brand", "model", "size", "season", "dot", "buy_price", "sell_price", "kdv_rate", "note", "quantity"):
+        if args.get(k) is not None:
+            fields[k] = args[k]
+    doc = await update_tire(args["tire_id"], TireIn(**{k: v for k, v in fields.items() if v is not None}), user=user)  # type: ignore
+    return {"ok": True, "label": _tire_label(doc), "sell_price": doc.get("sell_price"), "buy_price": doc.get("buy_price"), "quantity": doc.get("quantity")}
+
+
+async def _tool_create_sale(args: dict, user: dict) -> dict:
+    items = []
+    for it in args.get("items") or []:
+        tire = await db.tires.find_one({"id": it.get("tire_id")}, {"_id": 0})
+        if not tire:
+            return {"error": f"Lastik bulunamadı: {it.get('tire_id')}"}
+        price = it.get("unit_price")
+        items.append(SaleItemIn(tire_id=tire["id"], quantity=float(it.get("quantity", 1)),
+                                unit_price=float(price if price is not None else tire.get("sell_price", 0)),
+                                discount=float(it.get("discount", 0) or 0)))
+    if not items:
+        return {"error": "En az bir lastik gerekli"}
+    cari_id = None
+    if args.get("cari_id") or args.get("cari_name"):
+        cari_id = (await _resolve_cari(args))["id"]
+    pay = args.get("payment_method") or "nakit"
+    gross = sum(i.quantity * i.unit_price - i.discount for i in items) - float(args.get("overall_discount", 0) or 0)
+    blocked = _need_confirm(args, f"{len(items)} kalem, toplam ~{round(gross, 2)}₺, ödeme: {pay}")
+    if blocked:
+        return blocked
+    sale = await create_sale(SaleIn(cari_id=cari_id, items=items, overall_discount=float(args.get("overall_discount", 0) or 0),
+                                    payment_method=pay, note=args.get("note", ""), date=args.get("date")), user=user)  # type: ignore
+    return {"ok": True, "sale_id": sale["id"], "total": sale["total"], "payment_method": sale["payment_method"], "cari": sale.get("cari_name")}
+
+
+RECORD_COLLECTIONS = {
+    "income": "incomes", "expense": "expenses", "spending": "spendings", "todo": "todos",
+    "invoice": "invoices", "cari_tx": "cari_transactions", "sale": "sales", "tire": "tires", "cari": "cariler",
+}
+
+
+async def _tool_list_records(args: dict, user: dict) -> dict:
+    rtype = args["record_type"]
+    q: dict = {}
+    if rtype == "spending" and args.get("category"):
+        q["category"] = args["category"]
+    if rtype == "cari_tx":
+        q["cari_id"] = (await _resolve_cari(args))["id"]
+    if rtype == "todo" and args.get("only_open"):
+        q["completed"] = False
+    sort_key = "created_at" if rtype in ("todo", "tire", "cari") else "date"
+    docs = await db[RECORD_COLLECTIONS[rtype]].find(q, {"_id": 0, "items": 0, "movement_ids": 0}).sort(sort_key, -1).to_list(500)
+    if args.get("search"):
+        s = args["search"].lower()
+        docs = [d for d in docs if s in str(d).lower()]
+    keep = ("id", "date", "description", "name", "title", "amount", "category", "completed", "type", "total",
+            "cari_name", "payment_method", "brand", "size", "quantity", "note")
+    out = [{k: d[k] for k in keep if k in d} for d in docs[: int(args.get("limit") or 20)]]
+    return {"count": len(docs), "items": out}
+
+
+async def _tool_delete_record(args: dict, user: dict) -> dict:
+    rtype, rid = args["record_type"], args["record_id"]
+    doc = await db[RECORD_COLLECTIONS[rtype]].find_one({"id": rid}, {"_id": 0})
+    if not doc:
+        return {"error": "Kayıt bulunamadı"}
+    label = doc.get("description") or doc.get("name") or doc.get("title") or doc.get("cari_name") or rid
+    blocked = _need_confirm(args, f"'{label}' kaydını ({rtype}) silmek")
+    if blocked:
+        return blocked
+    if rtype == "cari_tx":
+        await delete_cari_tx(doc["cari_id"], rid, user=user)  # type: ignore
+    else:
+        fn = {"income": delete_income, "expense": delete_expense, "spending": delete_spending, "todo": delete_todo,
+              "invoice": delete_invoice, "sale": delete_sale, "tire": delete_tire, "cari": delete_cari}[rtype]
+        await fn(rid, user=user)  # type: ignore
+    return {"ok": True, "deleted": label}
+
+
+_RECORD_TYPES = list(RECORD_COLLECTIONS.keys())
+SAMPIYON_TOOLS += [
+    {"type": "function", "function": {
+        "name": "add_spending",
+        "description": "Harcamalar sayfasına harcama ekler. category: company=Şirket, user1=1. kullanıcı, user2=2. kullanıcı (isimler sistem mesajında). Direkt yap.",
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string", "description": "Harcama adı"}, "amount": {"type": "number"},
+            "category": {"type": "string", "enum": ["company", "user1", "user2"]}, "date": {"type": "string"}},
+            "required": ["name", "amount"]}}},
+    {"type": "function", "function": {
+        "name": "add_todo", "description": "Yapılacaklar listesine görev ekler. Direkt yap.",
+        "parameters": {"type": "object", "properties": {"title": {"type": "string"}, "note": {"type": "string"}}, "required": ["title"]}}},
+    {"type": "function", "function": {
+        "name": "complete_todo", "description": "Görevi tamamlandı (veya completed=false ile geri al) işaretler. id için önce list_records(todo).",
+        "parameters": {"type": "object", "properties": {"todo_id": {"type": "string"}, "completed": {"type": "boolean"}}, "required": ["todo_id"]}}},
+    {"type": "function", "function": {
+        "name": "add_cari", "description": "Yeni cari (müşteri/tedarikçi) ekler. Direkt yap.",
+        "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "phone": {"type": "string"},
+                                                        "address": {"type": "string"}, "note": {"type": "string"}}, "required": ["name"]}}},
+    {"type": "function", "function": {
+        "name": "add_cari_transaction",
+        "description": "Cariye hareket ekler. type: alacak=cari bize borçlandı, borc=biz cariye borçlandık, odeme=cariden gelen ödeme (alacaktan düşer). Direkt yap.",
+        "parameters": {"type": "object", "properties": {
+            "cari_name": {"type": "string"}, "cari_id": {"type": "string"},
+            "type": {"type": "string", "enum": ["alacak", "borc", "odeme"]}, "amount": {"type": "number"},
+            "description": {"type": "string"}, "date": {"type": "string"}}, "required": ["type", "amount"]}}},
+    {"type": "function", "function": {
+        "name": "add_invoice", "description": "Fatura ekler (tutar KDV dahil, %20 KDV otomatik hesaplanır). Direkt yap.",
+        "parameters": {"type": "object", "properties": {"description": {"type": "string"}, "amount": {"type": "number"},
+                                                        "date": {"type": "string"}}, "required": ["description", "amount"]}}},
+    {"type": "function", "function": {
+        "name": "update_tire", "description": "Lastik bilgilerini (fiyat, marka, model, DOT, adet vb.) günceller. Sadece değişen alanları gönder. Direkt yap.",
+        "parameters": {"type": "object", "properties": {
+            "tire_id": {"type": "string"}, "brand": {"type": "string"}, "model": {"type": "string"}, "size": {"type": "string"},
+            "season": {"type": "string", "enum": ["yaz", "kis", "4mevsim"]}, "dot": {"type": "string"},
+            "buy_price": {"type": "number"}, "sell_price": {"type": "number"}, "kdv_rate": {"type": "number"},
+            "quantity": {"type": "number"}, "note": {"type": "string"}}, "required": ["tire_id"]}}},
+    {"type": "function", "function": {
+        "name": "create_sale",
+        "description": "Lastik satışı yapar: stoktan düşer, peşinse gelir yazar, veresiyede cariye alacak yazar. ONAY GEREKİR: önce özetle, kullanıcı onaylarsa confirmed=true. unit_price boşsa lastiğin satış fiyatı kullanılır. Veresiye için cari zorunlu.",
+        "parameters": {"type": "object", "properties": {
+            "items": {"type": "array", "items": {"type": "object", "properties": {
+                "tire_id": {"type": "string"}, "quantity": {"type": "number"}, "unit_price": {"type": "number"},
+                "discount": {"type": "number"}}, "required": ["tire_id", "quantity"]}},
+            "cari_name": {"type": "string"}, "cari_id": {"type": "string"},
+            "payment_method": {"type": "string", "enum": ["nakit", "kart", "havale", "veresiye"]},
+            "overall_discount": {"type": "number"}, "note": {"type": "string"}, "date": {"type": "string"},
+            "confirmed": {"type": "boolean"}}, "required": ["items"]}}},
+    {"type": "function", "function": {
+        "name": "list_records",
+        "description": "Kayıtları listeler (silme/tamamlama için id bulmak veya göstermek için). cari_tx için cari_name gerekli.",
+        "parameters": {"type": "object", "properties": {
+            "record_type": {"type": "string", "enum": _RECORD_TYPES}, "search": {"type": "string"},
+            "category": {"type": "string", "enum": ["company", "user1", "user2"]}, "cari_name": {"type": "string"},
+            "only_open": {"type": "boolean"}, "limit": {"type": "number"}}, "required": ["record_type"]}}},
+    {"type": "function", "function": {
+        "name": "delete_record",
+        "description": "Bir kaydı siler (satış silinirse stok/gelir geri alınır). ONAY GEREKİR: önce kullanıcıya sor, onaylarsa confirmed=true.",
+        "parameters": {"type": "object", "properties": {
+            "record_type": {"type": "string", "enum": _RECORD_TYPES}, "record_id": {"type": "string"},
+            "confirmed": {"type": "boolean"}}, "required": ["record_type", "record_id"]}}},
+]
 
 
 SAMPIYON_TOOL_HANDLERS = {
@@ -2172,7 +2370,20 @@ SAMPIYON_TOOL_HANDLERS = {
     "add_income": _tool_add_income,
     "add_expense": _tool_add_expense,
     "list_recent_sales": _tool_list_recent_sales,
+    "add_spending": _tool_add_spending,
+    "add_todo": _tool_add_todo,
+    "complete_todo": _tool_complete_todo,
+    "add_cari": _tool_add_cari,
+    "add_cari_transaction": _tool_add_cari_transaction,
+    "add_invoice": _tool_add_invoice,
+    "update_tire": _tool_update_tire,
+    "create_sale": _tool_create_sale,
+    "list_records": _tool_list_records,
+    "delete_record": _tool_delete_record,
 }
+SAMPIYON_WRITE_TOOLS = {"add_tire", "update_tire_stock", "add_income", "add_expense", "add_spending", "add_todo",
+                        "complete_todo", "add_cari", "add_cari_transaction", "add_invoice", "update_tire",
+                        "create_sale", "delete_record"}
 
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -2190,60 +2401,108 @@ class SampiyonChatIn(BaseModel):
     history: List[dict] = []  # [{"role": "user"|"assistant", "content": "..."}]
 
 
-@api_router.post("/sampiyon/chat")
-async def sampiyon_chat(data: SampiyonChatIn, user: dict = Depends(get_current_user)):
-    """Şampiyon ile tek atışlık sohbet (non-stream, araç çağrımı ile)."""
-    if not EMERGENT_LLM_KEY:
-        raise HTTPException(500, "AI anahtarı yapılandırılmamış")
-    try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-    except Exception as e:
-        raise HTTPException(500, f"AI kütüphanesi yüklü değil: {e}")
-
-    session_id = f"sampiyon-{user['id']}"
-    # Geçmişi temizle ve başlangıç mesajları olarak yükle (son 10, user ile başlamalı)
+def _build_sampiyon_chat(data: "SampiyonChatIn", user: dict):
+    from emergentintegrations.llm.chat import LlmChat
     history: List[dict] = []
-    for h in data.history[-10:]:
+    for h in data.history[-12:]:
         role = h.get("role")
         content = (h.get("content") or "").strip()
         if role in ("user", "assistant") and content:
             history.append({"role": role, "content": content})
     while history and history[0]["role"] != "user":
         history.pop(0)
-    initial_messages = [{"role": "system", "content": SAMPIYON_SYSTEM_PROMPT}] + history
-    chat = (
-        LlmChat(api_key=EMERGENT_LLM_KEY, session_id=session_id, system_message=SAMPIYON_SYSTEM_PROMPT,
-                initial_messages=initial_messages)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    system = (f"{SAMPIYON_SYSTEM_PROMPT}\n\nBugün: {today}. Konuştuğun kullanıcı: {user['name']}. "
+              f"Harcama kategorileri: company=Şirket, user1={os.environ['USER1_NAME']}, user2={os.environ['USER2_NAME']}.")
+    return (
+        LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"sampiyon-{user['id']}", system_message=system,
+                initial_messages=[{"role": "system", "content": system}] + history)
         .with_model(SAMPIYON_MODEL_PROVIDER, SAMPIYON_MODEL_NAME)
         .with_tools(SAMPIYON_TOOLS, tool_choice="auto")
     )
 
-    tool_trace: List[dict] = []
+
+async def _run_sampiyon_tool(tc, user: dict) -> dict:
+    handler = SAMPIYON_TOOL_HANDLERS.get(tc.name)
+    if not handler:
+        return {"error": f"Bilinmeyen araç: {tc.name}"}
     try:
-        response = await chat.send_message_with_tools(UserMessage(text=data.message))
-        safety = 0
-        while getattr(response, "tool_calls", None) and safety < 6:
-            safety += 1
-            for tc in response.tool_calls:
-                handler = SAMPIYON_TOOL_HANDLERS.get(tc.name)
-                if not handler:
-                    result = {"error": f"Bilinmeyen araç: {tc.name}"}
-                else:
-                    try:
-                        result = await handler(tc.arguments or {}, user)
-                    except Exception as e:
-                        result = {"error": str(e)}
-                tool_trace.append({"name": tc.name, "arguments": tc.arguments, "result": result})
-                import json as _json
-                chat.add_tool_result(tc.id, _json.dumps(result, ensure_ascii=False, default=str))
-            response = await chat.send_message_with_tools()
-        text = getattr(response, "content", None) or ""
+        return await handler(tc.arguments or {}, user)
+    except HTTPException as e:
+        return {"error": str(e.detail)}
+    except Exception as e:
+        logger.exception(f"Şampiyon araç hatası: {tc.name}")
+        return {"error": str(e)}
+
+
+async def _sampiyon_events(data: "SampiyonChatIn", user: dict):
+    from emergentintegrations.llm.chat import UserMessage, TextDelta, ToolCallStart, ToolCallReady, StreamDone
+    import json as _json
+    chat = _build_sampiyon_chat(data, user)
+    msg = UserMessage(text=data.message)
+    reply, trace = "", []
+    for _ in range(8):
+        pending = []
+        async for ev in chat.stream_message(msg):
+            if isinstance(ev, TextDelta):
+                if ev.content:
+                    reply += ev.content
+                    yield {"type": "delta", "content": ev.content}
+            elif isinstance(ev, ToolCallStart):
+                yield {"type": "tool", "name": ev.name}
+            elif isinstance(ev, ToolCallReady):
+                pending.append(ev.tool_call)
+            elif isinstance(ev, StreamDone):
+                break
+        if not pending:
+            break
+        for tc in pending:
+            result = await _run_sampiyon_tool(tc, user)
+            trace.append({"name": tc.name, "arguments": tc.arguments, "result": result})
+            chat.add_tool_result(tc.id, _json.dumps(result, ensure_ascii=False, default=str))
+        if reply and not reply.endswith(("\n", " ")):
+            reply += "\n"
+            yield {"type": "delta", "content": "\n"}
+        msg = None
+    changed = any(t["name"] in SAMPIYON_WRITE_TOOLS and isinstance(t["result"], dict) and t["result"].get("ok") for t in trace)
+    await log_activity(user, "chat", "Sampiyon", f"Mesaj: {data.message[:120]}")
+    yield {"type": "done", "reply": reply.strip(), "tool_trace": trace, "data_changed": changed}
+
+
+@api_router.post("/sampiyon/chat")
+async def sampiyon_chat(data: SampiyonChatIn, user: dict = Depends(get_current_user)):
+    """Şampiyon sohbet (non-stream)."""
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(500, "AI anahtarı yapılandırılmamış")
+    try:
+        final = {}
+        async for ev in _sampiyon_events(data, user):
+            if ev["type"] == "done":
+                final = ev
     except Exception as e:
         logger.exception("Şampiyon chat hatası")
         raise HTTPException(500, f"AI hatası: {e}")
+    return {"reply": final.get("reply", ""), "tool_trace": final.get("tool_trace", []), "data_changed": final.get("data_changed", False)}
 
-    await log_activity(user, "chat", "Sampiyon", f"Mesaj: {data.message[:120]}")
-    return {"reply": text, "tool_trace": tool_trace}
+
+@api_router.post("/sampiyon/chat/stream")
+async def sampiyon_chat_stream(data: SampiyonChatIn, user: dict = Depends(get_current_user)):
+    """Şampiyon sohbet — SSE akışı (delta / tool / done / error)."""
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(500, "AI anahtarı yapılandırılmamış")
+    import json as _json
+    from fastapi.responses import StreamingResponse
+
+    async def gen():
+        try:
+            async for ev in _sampiyon_events(data, user):
+                yield f"data: {_json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
+        except Exception as e:
+            logger.exception("Şampiyon stream hatası")
+            yield f"data: {_json.dumps({'type': 'error', 'message': f'AI hatası: {e}'}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @api_router.post("/sampiyon/transcribe")
@@ -2265,32 +2524,39 @@ async def sampiyon_transcribe(file: UploadFile = File(...), user: dict = Depends
     return {"text": text}
 
 
+SAMPIYON_TTS_INSTRUCTIONS = (
+    "Türkçe konuşan, 30'lu yaşlarda, samimi ve enerjik bir erkek oto lastik ustası gibi konuş. "
+    "Doğal, sıcak ve akıcı bir tonla; robot gibi değil, arkadaşınla konuşur gibi. "
+    "Tempo canlı ve biraz hızlı olsun, gereksiz duraklama yapma. Sayıları ve para birimlerini doğal Türkçe oku."
+)
+
+
 class SampiyonTTSIn(BaseModel):
     text: str
-    voice: Optional[str] = "onyx"  # erkek ses
-    speed: Optional[float] = 1.15
+    voice: Optional[str] = "ash"
 
 
 @api_router.post("/sampiyon/tts")
 async def sampiyon_tts(data: SampiyonTTSIn, user: dict = Depends(get_current_user)):
-    """Metni OpenAI TTS ile sese çevirir, MP3 bayt akışı döner."""
+    """Metni OpenAI gpt-4o-mini-tts ile doğal sese çevirir (MP3)."""
     if not EMERGENT_LLM_KEY:
         raise HTTPException(500, "AI anahtarı yapılandırılmamış")
+    text = (data.text or "").strip()[:4000]
+    if not text:
+        raise HTTPException(400, "Metin boş")
     try:
         from openai import AsyncOpenAI
-        from fastapi.responses import StreamingResponse
+        from fastapi.responses import Response
         client = AsyncOpenAI(api_key=EMERGENT_LLM_KEY, base_url="https://integrations.emergentagent.com/llm")
-        speed = max(0.5, min(2.0, float(data.speed or 1.15)))
         async with client.audio.speech.with_streaming_response.create(
-            model="tts-1",
-            voice=data.voice or "onyx",
-            input=data.text[:4000],
-            speed=speed,
+            model="gpt-4o-mini-tts",
+            voice=data.voice or "ash",
+            input=text,
+            instructions=SAMPIYON_TTS_INSTRUCTIONS,
+            response_format="mp3",
         ) as resp:
-            audio_bytes = b""
-            async for chunk in resp.iter_bytes():
-                audio_bytes += chunk
-        return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/mpeg")
+            audio_bytes = b"".join([chunk async for chunk in resp.iter_bytes()])
+        return Response(content=audio_bytes, media_type="audio/mpeg")
     except Exception as e:
         logger.exception("TTS hatası")
         raise HTTPException(500, f"Ses üretilemedi: {e}")

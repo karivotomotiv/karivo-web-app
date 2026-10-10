@@ -1,62 +1,166 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { api, API, extractError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Sparkles, X, Send, Mic, MicOff, Volume2, Loader2 } from "lucide-react";
+import { Sparkles, X, Send, Mic, MicOff, Volume2, VolumeX, Loader2, Wrench } from "lucide-react";
 import { toast } from "sonner";
+
+const TOOL_LABELS = {
+  search_tires: "Lastiklere bakıyorum", get_stock_summary: "Stok özetini çıkarıyorum", get_finance_summary: "Finansa bakıyorum",
+  list_cariler: "Carilere bakıyorum", add_tire: "Lastik ekliyorum", update_tire_stock: "Stoğu güncelliyorum",
+  add_income: "Gelir yazıyorum", add_expense: "Gider yazıyorum", list_recent_sales: "Satışlara bakıyorum",
+  add_spending: "Harcama giriyorum", add_todo: "Görev ekliyorum", complete_todo: "Görevi güncelliyorum",
+  add_cari: "Cari ekliyorum", add_cari_transaction: "Cari hareketi yazıyorum", add_invoice: "Fatura ekliyorum",
+  update_tire: "Lastiği güncelliyorum", create_sale: "Satışı hazırlıyorum", list_records: "Kayıtlara bakıyorum",
+  delete_record: "Silme işlemi",
+};
+
+const cleanForSpeech = (t) =>
+  t.replace(/[*_#`>|]/g, "").replace(/\p{Extended_Pictographic}/gu, "").replace(/\s+/g, " ").trim();
+
+const WELCOME = "Selam patron, ben Şampiyon. Harcama gir, satış yap, cariye ödeme işle, görev ekle — ne dersen yaparım. Yaz ya da mikrofona basıp söyle.";
+
+async function streamChat(body, onEvent) {
+  const resp = await fetch(`${API}/sampiyon/chat/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("ks_token")}` },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok || !resp.body) throw new Error((await resp.text()) || `HTTP ${resp.status}`);
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const parts = buf.split("\n\n");
+    buf = parts.pop();
+    for (const p of parts) {
+      const line = p.split("\n").find((l) => l.startsWith("data: "));
+      if (line) onEvent(JSON.parse(line.slice(6)));
+    }
+  }
+}
 
 export default function SampiyonWidget() {
   const [open, setOpen] = useState(false);
-  const [messages, setMessages] = useState([
-    { role: "assistant", content: "Selam patron, ben Şampiyon 🏆 — Karivo'nun yardımcısıyım. '205/55 R16 kaç tane kaldı?', 'bugün ne sattık?' gibi sor ya da bir işlem yaptır. Mikrofona basıp sesli de konuşabilirsin." },
-  ]);
+  const [messages, setMessages] = useState([{ role: "assistant", content: WELCOME }]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [toolStatus, setToolStatus] = useState(null);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
-  const [ttsLoading, setTtsLoading] = useState(null); // index of message
+  const [voice, setVoice] = useState(null); // {idx, phase: 'loading'|'playing'}
+  const messagesRef = useRef(messages);
   const audioRef = useRef(null);
+  const ttsAbortRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const scrollRef = useRef(null);
 
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [messages, open]);
+  }, [messages, open, toolStatus]);
 
-  const send = async (text, historyOverride, autoSpeak = false) => {
+  const stopSpeaking = useCallback(() => {
+    ttsAbortRef.current?.abort();
+    ttsAbortRef.current = null;
+    const a = audioRef.current;
+    if (a) { a.pause(); a.removeAttribute("src"); a.load(); }
+    setVoice(null);
+  }, []);
+
+  // Kullanıcı herhangi bir şey yaparsa (tıklama / tuş) konuşmayı kes
+  useEffect(() => {
+    if (!voice) return undefined;
+    const handler = () => stopSpeaking();
+    const t = setTimeout(() => {
+      document.addEventListener("pointerdown", handler, true);
+      document.addEventListener("keydown", handler, true);
+    }, 0);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("pointerdown", handler, true);
+      document.removeEventListener("keydown", handler, true);
+    };
+  }, [voice, stopSpeaking]);
+
+  const speak = async (text, idx) => {
+    stopSpeaking();
+    const clean = cleanForSpeech(text);
+    if (!clean) return;
+    const ctrl = new AbortController();
+    ttsAbortRef.current = ctrl;
+    setVoice({ idx, phase: "loading" });
+    try {
+      const resp = await fetch(`${API}/sampiyon/tts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("ks_token")}` },
+        body: JSON.stringify({ text: clean }),
+        signal: ctrl.signal,
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      const blob = await resp.blob();
+      if (ctrl.signal.aborted) return;
+      const a = audioRef.current;
+      a.src = URL.createObjectURL(blob);
+      a.onended = () => setVoice(null);
+      setVoice({ idx, phase: "playing" });
+      await a.play().catch(() => { setVoice(null); toast.info("Otomatik oynatma engellendi — 'Oku'ya basın"); });
+    } catch (e) {
+      if (e.name !== "AbortError") { setVoice(null); toast.error("Ses oynatılamadı"); }
+    }
+  };
+
+  const updateLast = (patch) =>
+    setMessages((prev) => {
+      const next = [...prev];
+      next[next.length - 1] = { ...next[next.length - 1], ...patch(next[next.length - 1]) };
+      return next;
+    });
+
+  const send = async (text, autoSpeak = false) => {
     const content = (text ?? input).trim();
     if (!content || sending) return;
-    const newMessages = [...messages, { role: "user", content }];
-    setMessages(newMessages);
+    stopSpeaking();
+    const assistantIdx = messagesRef.current.length + 1;
+    const history = messagesRef.current
+      .filter((m) => !m.error && m.content)
+      .slice(-12)
+      .map((m) => ({ role: m.role, content: m.content }));
+    setMessages((prev) => [...prev, { role: "user", content }, { role: "assistant", content: "", streaming: true }]);
     setInput("");
     setSending(true);
+    let final = null;
     try {
-      const history = (historyOverride ?? newMessages.slice(0, -1))
-        .filter((m) => !m.error && (m.role === "user" || m.role === "assistant"))
-        .slice(-10)
-        .map((m) => ({ role: m.role, content: m.content }));
-      const { data } = await api.post("/sampiyon/chat", { message: content, history }, { timeout: 120000 });
-      const replyMsg = { role: "assistant", content: data.reply || "(boş yanıt)", tool_trace: data.tool_trace };
-      const finalMessages = [...newMessages, replyMsg];
-      setMessages(finalMessages);
-      if (autoSpeak && replyMsg.content && !replyMsg.content.startsWith("Hata:")) {
-        speak(replyMsg.content, finalMessages.length - 1);
-      }
+      await streamChat({ message: content, history }, (ev) => {
+        if (ev.type === "delta") { setToolStatus(null); updateLast((m) => ({ content: m.content + ev.content })); }
+        else if (ev.type === "tool") setToolStatus(TOOL_LABELS[ev.name] || "Çalışıyorum");
+        else if (ev.type === "done") final = ev;
+        else if (ev.type === "error") throw new Error(ev.message);
+      });
+      if (!final) throw new Error("Yanıt yarıda kesildi");
+      const reply = final.reply || "Tamamdır.";
+      updateLast(() => ({ content: reply, tool_trace: final.tool_trace, streaming: false }));
+      if (final.data_changed) window.dispatchEvent(new CustomEvent("karivo:data-changed"));
+      if (autoSpeak) speak(reply, assistantIdx);
     } catch (e) {
-      setMessages([...newMessages, { role: "assistant", content: `Hata: ${extractError(e)}`, error: true }]);
+      updateLast(() => ({ content: `Hata: ${extractError(e)}`, error: true, streaming: false }));
     } finally {
       setSending(false);
+      setToolStatus(null);
     }
   };
 
   const startRecording = async () => {
+    stopSpeaking();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mr = new MediaRecorder(stream);
       mediaRecorderRef.current = mr;
       audioChunksRef.current = [];
-      const historySnapshot = messages;
       mr.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
       mr.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
@@ -67,7 +171,7 @@ export default function SampiyonWidget() {
           fd.append("file", blob, "voice.webm");
           const { data } = await api.post("/sampiyon/transcribe", fd, { headers: { "Content-Type": "multipart/form-data" }, timeout: 60000 });
           const txt = (data.text || "").trim();
-          if (txt) { setInput(txt); send(txt, historySnapshot, true); }
+          if (txt) send(txt, true);
           else toast.info("Ses algılanamadı");
         } catch (e) { toast.error(extractError(e)); }
         finally { setTranscribing(false); }
@@ -85,34 +189,9 @@ export default function SampiyonWidget() {
     }
   };
 
-  const speak = async (text, idx) => {
-    if (ttsLoading !== null) return;
-    setTtsLoading(idx);
-    try {
-      const token = localStorage.getItem("ks_token");
-      const resp = await fetch(`${API}/sampiyon/tts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
-        body: JSON.stringify({ text, voice: "onyx", speed: 1.15 }),
-      });
-      if (!resp.ok) throw new Error(await resp.text());
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      if (audioRef.current) {
-        audioRef.current.src = url;
-        await audioRef.current.play().catch(() => toast.info("Otomatik oynatma engellendi — 'Oku'ya basın"));
-      }
-    } catch (e) {
-      toast.error("Ses oynatılamadı");
-    } finally {
-      setTtsLoading(null);
-    }
-  };
-
   return (
     <>
-      <audio ref={audioRef} className="hidden" />
-      {/* Floating button */}
+      <audio ref={audioRef} className="hidden" data-testid="sampiyon-audio" />
       <button
         onClick={() => setOpen(!open)}
         className={`fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full shadow-xl flex items-center justify-center transition-all ${
@@ -124,22 +203,24 @@ export default function SampiyonWidget() {
         {open ? <X className="w-6 h-6" /> : <Sparkles className="w-6 h-6" />}
       </button>
 
-      {/* Panel */}
       {open && (
         <div className="fixed bottom-24 right-6 z-50 w-[400px] max-w-[calc(100vw-3rem)] h-[600px] max-h-[calc(100vh-8rem)] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden" data-testid="sampiyon-panel">
-          {/* Header */}
           <div className="bg-gradient-to-r from-indigo-600 to-fuchsia-600 text-white px-4 py-3 flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center backdrop-blur-sm">
               <Sparkles className="w-5 h-5" />
             </div>
-            <div>
+            <div className="flex-1">
               <div className="font-extrabold text-sm">Şampiyon</div>
-              <div className="text-[11px] text-white/80">Karivo AI Asistanı · Claude Sonnet 5.5</div>
+              <div className="text-[11px] text-white/80">Karivo AI Asistanı · Gemini 3 Flash</div>
             </div>
+            {voice && (
+              <button onClick={stopSpeaking} className="text-xs bg-white/20 hover:bg-white/30 rounded-lg px-2 py-1 inline-flex items-center gap-1" data-testid="sampiyon-stop-voice">
+                <VolumeX className="w-3.5 h-3.5" /> Sustur
+              </button>
+            )}
           </div>
 
-          {/* Messages */}
-          <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
+          <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50" data-testid="sampiyon-messages">
             {messages.map((m, i) => (
               <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`} data-testid={`sampiyon-msg-${i}`}>
                 <div className={`max-w-[85%] rounded-2xl px-3.5 py-2 text-sm ${
@@ -147,39 +228,39 @@ export default function SampiyonWidget() {
                   : m.error ? "bg-rose-50 text-rose-800 border border-rose-200 rounded-bl-md"
                   : "bg-white text-slate-900 border border-slate-200 rounded-bl-md shadow-sm"
                 }`}>
-                  <div className="whitespace-pre-wrap">{m.content}</div>
-                  {m.role === "assistant" && !m.error && (
+                  {m.streaming && !m.content ? (
+                    <div className="flex items-center gap-2 text-indigo-600 text-xs" data-testid="sampiyon-thinking">
+                      <Loader2 className="w-4 h-4 animate-spin" /> {toolStatus || "Düşünüyorum"}...
+                    </div>
+                  ) : (
+                    <div className="whitespace-pre-wrap">{m.content}</div>
+                  )}
+                  {m.role === "assistant" && !m.error && !m.streaming && m.content && (
                     <div className="mt-1.5 flex items-center gap-2">
                       <button
-                        onClick={() => speak(m.content, i)}
-                        disabled={ttsLoading !== null}
+                        onClick={() => (voice?.idx === i ? stopSpeaking() : speak(m.content, i))}
                         className="text-xs text-slate-500 hover:text-indigo-700 inline-flex items-center gap-1"
                         data-testid={`sampiyon-speak-${i}`}
                       >
-                        {ttsLoading === i ? <Loader2 className="w-3 h-3 animate-spin" /> : <Volume2 className="w-3 h-3" />}
-                        Oku
+                        {voice?.idx === i && voice.phase === "loading" ? <Loader2 className="w-3 h-3 animate-spin" />
+                          : voice?.idx === i ? <VolumeX className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
+                        {voice?.idx === i ? "Durdur" : "Oku"}
                       </button>
                       {m.tool_trace?.length > 0 && (
-                        <span className="text-[10px] text-slate-400">🔧 {m.tool_trace.length} araç kullandı</span>
+                        <span className="text-[10px] text-slate-400 inline-flex items-center gap-1" data-testid={`sampiyon-tools-${i}`}>
+                          <Wrench className="w-3 h-3" /> {m.tool_trace.length} işlem
+                        </span>
                       )}
                     </div>
                   )}
                 </div>
               </div>
             ))}
-            {sending && (
-              <div className="flex justify-start">
-                <div className="bg-white border border-slate-200 rounded-2xl rounded-bl-md px-3.5 py-2 shadow-sm">
-                  <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
-                </div>
-              </div>
-            )}
             {transcribing && (
-              <div className="text-xs text-indigo-600 text-center">🎙️ Ses yazıya çevriliyor...</div>
+              <div className="text-xs text-indigo-600 text-center" data-testid="sampiyon-transcribing">Ses yazıya çevriliyor...</div>
             )}
           </div>
 
-          {/* Input */}
           <div className="p-3 border-t border-slate-200 bg-white">
             <form onSubmit={(e) => { e.preventDefault(); send(); }} className="flex gap-2">
               <button
@@ -196,9 +277,9 @@ export default function SampiyonWidget() {
               </button>
               <Input
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={(e) => { if (voice) stopSpeaking(); setInput(e.target.value); }}
                 placeholder="Şampiyon'a yaz veya mikrofona bas..."
-                disabled={sending || recording}
+                disabled={recording}
                 className="flex-1"
                 data-testid="sampiyon-input"
               />
@@ -207,7 +288,7 @@ export default function SampiyonWidget() {
               </Button>
             </form>
             <div className="text-[10px] text-slate-400 mt-1.5 text-center">
-              AI yanıtlarını daima doğrulayın · Değişiklikler onay ister
+              Satış ve silme işlemleri onay ister · Konuşurken bir şey yaparsan susar
             </div>
           </div>
         </div>
