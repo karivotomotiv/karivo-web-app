@@ -8,7 +8,7 @@ import { toast } from "sonner";
 export default function SampiyonWidget() {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState([
-    { role: "assistant", content: "Merhaba, ben Şampiyon 🏆 — Karivo'nun AI asistanıyım. '205/55 R16 kaç tane kaldı?', 'bu ay geliri' gibi sorular sorabilir ya da işlem yaptırabilirsiniz. Mikrofonla da konuşabilirsiniz." },
+    { role: "assistant", content: "Selam patron, ben Şampiyon 🏆 — Karivo'nun yardımcısıyım. '205/55 R16 kaç tane kaldı?', 'bugün ne sattık?' gibi sor ya da bir işlem yaptır. Mikrofona basıp sesli de konuşabilirsin." },
   ]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -85,7 +85,7 @@ export default function SampiyonWidget() {
       const resp = await fetch(`${API}/sampiyon/tts`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
-        body: JSON.stringify({ text, voice: "nova" }),
+        body: JSON.stringify({ text, voice: "onyx" }),
       });
       if (!resp.ok) throw new Error(await resp.text());
       const blob = await resp.blob();
