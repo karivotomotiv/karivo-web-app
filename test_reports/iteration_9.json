@@ -1,0 +1,25 @@
+{
+  "summary": "Iter-9 backend verification for Satışlar (Sales) module + sidebar merge regression. Added TestSales class (8 tests) covering: (1) auth required on GET /api/sales; (2) nakit (cash) sale creates matching Income record and reduces tire quantity atomically; (3) veresiye sale requires cari_id (400 without), creates cari alacak transaction (NO income), honors line-level discount + overall_discount in subtotal/total math; (4) insufficient stock returns 400 without partially modifying stock; (5) DELETE /api/sales/{id} fully reverses stock, income, cari alacak, logs 'iade' stock movement, and double-delete returns 400; (6) cash-sale delete removes the Income row; (7) 404 cases for missing sale_id and nonexistent tire_id; (8) empty items rejected with 400/422. Full regression against preview URL: Şampiyon chat search_tires tool-trace, /api/inventory/alerts (db.tires threshold=4), cari totals (alacak/borc/odeme/remaining_alacak), /api/sampiyon/import-confirm, monthly report cron/preview/send-now, invoices preview+confirm → all green. Result: 61/61 PASS.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/iter9_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py now 2471 lines — well past the 700-line soft limit; split into routers (auth, finance, tires, sales, cariler, invoices, sampiyon, reports) is overdue.",
+    "/api/sales rollback relies on in-process try/except compensation across 3 collections (tires, incomes/cari_transactions, stock_movements). This is NOT atomic — if the server crashes mid-flow the compensations are lost. Consider MongoDB transactions (requires replica set) or at minimum a 'pending_sales' audit record so an admin task can detect orphaned stock movements.",
+    "DELETE /api/sales soft-deletes (reversed=True) but GET /api/sales/{id} still returns the reversed sale with no filter. Clients must inspect `reversed` themselves — list endpoint should probably support ?include_reversed=false by default.",
+    "/api/sales POST does not round-trip validate: a client could pass a unit_price that differs from the tire's sell_price. This may be intentional (ad-hoc pricing) but is worth documenting; otherwise consider warning if |unit_price - sell_price| > 10%.",
+    "Şampiyon tool-handlers still call endpoint functions directly (unchanged from iter-7/8). Service-layer extraction would ease unit testing.",
+    "/api/inventory/send-low-stock-email emails all users regardless of role; add role or opt-in subscription filter."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (61/61)", "frontend": "not tested this iteration"},
+  "test_credentials": "murat@karivo.local / Murat2026! · ozkan@karivo.local / Ozkan2026!",
+  "seed_data_creation": "All TEST_SALE_*, TEST_cari_SALE/REV/SALE_* created inside tests are cleaned up in finally blocks (sale → tire → cari cascade). Verified no residual TEST_* records remain.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iter-9 adds /api/sales (list/get/create/delete). Compensation-based 'atomic' rollback across tires/incomes/cari_transactions is in place. New TestSales class covers happy paths + 400/404/stock/rollback edges. Full suite 61/61 green at /app/backend/tests/backend_test.py. Known: DELETE is a soft-delete (reversed=True) and reversed sales still show in GET /api/sales listing. If iter-10 touches sales schema (e.g., edit sale, add KDV breakdown, partial reverse), rerun this suite and extend TestSales accordingly."
+}

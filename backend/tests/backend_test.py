@@ -984,3 +984,165 @@ class TestSampiyon:
         r = requests.post(f"{API}/sampiyon/import-confirm",
                           json={"items": [{"brand": "X", "size": "1"}]}, timeout=20)
         assert r.status_code in (401, 403)
+
+
+# ---------- SALES (Iteration-9) ----------
+class TestSales:
+    """CRUD + stock + gelir/cari side-effects for /api/sales."""
+
+    def _mk_tire(self, h1, qty=10, brand="TEST_SALE_TIRE"):
+        p = {"brand": brand, "model": "M", "size": "205/55 R16",
+             "season": "yaz", "quantity": qty, "buy_price": 1000,
+             "sell_price": 1500, "kdv_rate": 20}
+        r = requests.post(f"{API}/tires", headers=h1, json=p, timeout=20)
+        assert r.status_code == 200, r.text
+        return r.json()["id"]
+
+    def test_requires_auth(self):
+        r = requests.get(f"{API}/sales", timeout=20)
+        assert r.status_code in (401, 403)
+
+    def test_cash_sale_creates_income_and_reduces_stock(self, h1):
+        tid = self._mk_tire(h1, qty=10)
+        sale_id = None
+        try:
+            payload = {
+                "items": [{"tire_id": tid, "quantity": 2, "unit_price": 1500, "discount": 0}],
+                "payment_method": "nakit",
+                "overall_discount": 0,
+            }
+            r = requests.post(f"{API}/sales", headers=h1, json=payload, timeout=20)
+            assert r.status_code == 200, r.text
+            s = r.json()
+            sale_id = s["id"]
+            assert s["total"] == 3000.0
+            assert s["subtotal"] == 3000.0
+            assert s["payment_method"] == "nakit"
+            assert s["income_id"] and not s["cari_tx_id"]
+            # Stock reduced
+            tr = requests.get(f"{API}/tires", headers=h1, timeout=20).json()
+            tt = next(t for t in tr if t["id"] == tid)
+            assert tt["quantity"] == 8.0
+            # Income exists
+            inc = requests.get(f"{API}/incomes", headers=h1, timeout=20).json()
+            assert any(x["id"] == s["income_id"] and x["amount"] == 3000.0 for x in inc)
+        finally:
+            if sale_id:
+                requests.delete(f"{API}/sales/{sale_id}", headers=h1, timeout=20)
+            requests.delete(f"{API}/tires/{tid}", headers=h1, timeout=20)
+
+    def test_veresiye_creates_cari_alacak_no_income(self, h1):
+        tid = self._mk_tire(h1, qty=5, brand="TEST_SALE_VER")
+        rc = requests.post(f"{API}/cariler", headers=h1, json={"name": "TEST_cari_SALE"}, timeout=20)
+        cid = rc.json()["id"]
+        sale_id = None
+        try:
+            # veresiye without cari -> 400
+            r = requests.post(f"{API}/sales", headers=h1, json={
+                "items": [{"tire_id": tid, "quantity": 1, "unit_price": 1500}],
+                "payment_method": "veresiye"}, timeout=20)
+            assert r.status_code == 400
+
+            # Correct veresiye
+            r = requests.post(f"{API}/sales", headers=h1, json={
+                "cari_id": cid,
+                "items": [{"tire_id": tid, "quantity": 2, "unit_price": 1500, "discount": 100}],
+                "overall_discount": 200,
+                "payment_method": "veresiye"}, timeout=20)
+            assert r.status_code == 200, r.text
+            s = r.json()
+            sale_id = s["id"]
+            # subtotal = 2*1500 - 100 = 2900; total = 2900 - 200 = 2700
+            assert s["subtotal"] == 2900.0
+            assert s["total"] == 2700.0
+            assert s["cari_tx_id"] and not s["income_id"]
+            # cari balance reflects alacak
+            d = requests.get(f"{API}/cariler/{cid}", headers=h1, timeout=20).json()
+            assert d["total_alacak"] == 2700.0
+            assert d["tx_count"] == 1
+        finally:
+            if sale_id:
+                requests.delete(f"{API}/sales/{sale_id}", headers=h1, timeout=20)
+            requests.delete(f"{API}/tires/{tid}", headers=h1, timeout=20)
+            requests.delete(f"{API}/cariler/{cid}", headers=h1, timeout=20)
+
+    def test_insufficient_stock_rejected(self, h1):
+        tid = self._mk_tire(h1, qty=2, brand="TEST_SALE_LOW")
+        try:
+            r = requests.post(f"{API}/sales", headers=h1, json={
+                "items": [{"tire_id": tid, "quantity": 10, "unit_price": 1500}],
+                "payment_method": "nakit"}, timeout=20)
+            assert r.status_code == 400
+            # Stock should remain 2 (no partial update)
+            tires = requests.get(f"{API}/tires", headers=h1, timeout=20).json()
+            tt = next(t for t in tires if t["id"] == tid)
+            assert tt["quantity"] == 2.0
+        finally:
+            requests.delete(f"{API}/tires/{tid}", headers=h1, timeout=20)
+
+    def test_delete_reverses_stock_income_and_cari(self, h1):
+        tid = self._mk_tire(h1, qty=10, brand="TEST_SALE_REV")
+        rc = requests.post(f"{API}/cariler", headers=h1, json={"name": "TEST_cari_REV"}, timeout=20)
+        cid = rc.json()["id"]
+        try:
+            # veresiye sale
+            r = requests.post(f"{API}/sales", headers=h1, json={
+                "cari_id": cid,
+                "items": [{"tire_id": tid, "quantity": 3, "unit_price": 1000}],
+                "payment_method": "veresiye"}, timeout=20)
+            assert r.status_code == 200
+            sale_id = r.json()["id"]
+            assert r.json()["total"] == 3000.0
+
+            # Stock reduced to 7, cari alacak 3000
+            tires = requests.get(f"{API}/tires", headers=h1, timeout=20).json()
+            assert next(t for t in tires if t["id"] == tid)["quantity"] == 7.0
+            assert requests.get(f"{API}/cariler/{cid}", headers=h1, timeout=20).json()["total_alacak"] == 3000.0
+
+            # Delete (iptal)
+            r = requests.delete(f"{API}/sales/{sale_id}", headers=h1, timeout=20)
+            assert r.status_code == 200
+            # Stock restored
+            tires = requests.get(f"{API}/tires", headers=h1, timeout=20).json()
+            assert next(t for t in tires if t["id"] == tid)["quantity"] == 10.0
+            # cari alacak cleared
+            assert requests.get(f"{API}/cariler/{cid}", headers=h1, timeout=20).json()["total_alacak"] == 0.0
+            # Double delete -> 400
+            r = requests.delete(f"{API}/sales/{sale_id}", headers=h1, timeout=20)
+            assert r.status_code == 400
+        finally:
+            requests.delete(f"{API}/tires/{tid}", headers=h1, timeout=20)
+            requests.delete(f"{API}/cariler/{cid}", headers=h1, timeout=20)
+
+    def test_cash_sale_delete_removes_income(self, h1):
+        tid = self._mk_tire(h1, qty=10, brand="TEST_SALE_CASHREV")
+        try:
+            r = requests.post(f"{API}/sales", headers=h1, json={
+                "items": [{"tire_id": tid, "quantity": 1, "unit_price": 1500}],
+                "payment_method": "nakit"}, timeout=20)
+            assert r.status_code == 200
+            s = r.json()
+            inc_id = s["income_id"]
+            assert any(x["id"] == inc_id for x in requests.get(f"{API}/incomes", headers=h1, timeout=20).json())
+            requests.delete(f"{API}/sales/{s['id']}", headers=h1, timeout=20)
+            assert not any(x["id"] == inc_id for x in requests.get(f"{API}/incomes", headers=h1, timeout=20).json())
+        finally:
+            requests.delete(f"{API}/tires/{tid}", headers=h1, timeout=20)
+
+    def test_404_cases(self, h1):
+        r = requests.get(f"{API}/sales/does-not-exist", timeout=20,
+                         headers=h1)
+        assert r.status_code == 404
+        r = requests.delete(f"{API}/sales/does-not-exist", timeout=20, headers=h1)
+        assert r.status_code == 404
+        # Invalid tire_id
+        r = requests.post(f"{API}/sales", headers=h1, json={
+            "items": [{"tire_id": "nope", "quantity": 1, "unit_price": 100}],
+            "payment_method": "nakit"}, timeout=20)
+        assert r.status_code == 404
+
+    def test_empty_items_rejected(self, h1):
+        r = requests.post(f"{API}/sales", headers=h1, json={
+            "items": [], "payment_method": "nakit"}, timeout=20)
+        assert r.status_code in (400, 422)
+
