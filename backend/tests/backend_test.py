@@ -762,3 +762,188 @@ class TestCariIncomeExpense:
         finally:
             requests.delete(f"{API}/cariler/{cid}", headers=h1, timeout=20)
 
+
+
+# ---------- TIRES (Iteration-7) ----------
+class TestTires:
+    """CRUD + movement for /api/tires (lastik stok modülü)."""
+
+    def test_create_and_list(self, h1):
+        payloads = [
+            {"brand": "TEST_Michelin", "model": "Primacy 4", "size": "205/55 R16",
+             "season": "yaz", "dot": "2423", "quantity": 8, "buy_price": 2500,
+             "sell_price": 3200, "kdv_rate": 20, "note": "pytest"},
+            {"brand": "TEST_Bridgestone", "model": "Blizzak", "size": "225/45 R17",
+             "season": "kis", "dot": "0124", "quantity": 4, "buy_price": 3100,
+             "sell_price": 3900, "kdv_rate": 20, "note": "pytest"},
+        ]
+        created_ids = []
+        try:
+            for p in payloads:
+                r = requests.post(f"{API}/tires", headers=h1, json=p, timeout=20)
+                assert r.status_code == 200, r.text
+                d = r.json()
+                assert d["brand"] == p["brand"]
+                assert d["size"] == p["size"]
+                assert d["season"] == p["season"]
+                assert d["quantity"] == float(p["quantity"])
+                # legacy mirror fields present
+                assert d["remaining_qty"] == float(p["quantity"])
+                assert d["product_name"]
+                assert "id" in d and isinstance(d["id"], str)
+                created_ids.append(d["id"])
+
+            # GET list — created tires visible
+            r = requests.get(f"{API}/tires", headers=h1, timeout=20)
+            assert r.status_code == 200
+            all_ids = {t["id"] for t in r.json()}
+            for cid in created_ids:
+                assert cid in all_ids
+
+            # Filter by size
+            r = requests.get(f"{API}/tires", headers=h1,
+                             params={"size": "205/55"}, timeout=20)
+            assert r.status_code == 200
+            sizes = {t["size"] for t in r.json()}
+            assert any("205/55" in s for s in sizes)
+
+            # Filter by season=kis
+            r = requests.get(f"{API}/tires", headers=h1,
+                             params={"season": "kis"}, timeout=20)
+            assert r.status_code == 200
+            assert all(t["season"] == "kis" for t in r.json())
+
+            # Movement: +2 then -1 and verify after values
+            tid = created_ids[0]
+            r = requests.post(f"{API}/tires/{tid}/movement", headers=h1,
+                              json={"delta": 2, "reason": "alis", "note": "test in"}, timeout=20)
+            assert r.status_code == 200, r.text
+            mv = r.json()
+            assert mv["before"] == 8.0 and mv["after"] == 10.0 and mv["delta"] == 2.0
+
+            r = requests.post(f"{API}/tires/{tid}/movement", headers=h1,
+                              json={"delta": -1, "reason": "satis"}, timeout=20)
+            assert r.status_code == 200
+            assert r.json()["after"] == 9.0
+
+            # Negative stock rejected
+            r = requests.post(f"{API}/tires/{tid}/movement", headers=h1,
+                              json={"delta": -9999, "reason": "satis"}, timeout=20)
+            assert r.status_code == 400
+
+            # Movements list — at least 3 entries (ilk-kayit + 2 moves)
+            r = requests.get(f"{API}/tires/{tid}/movements", headers=h1, timeout=20)
+            assert r.status_code == 200
+            assert len(r.json()) >= 3
+
+            # Update tire — change quantity should log a "duzenleme" movement
+            upd = {**payloads[0], "quantity": 15}
+            r = requests.put(f"{API}/tires/{tid}", headers=h1, json=upd, timeout=20)
+            assert r.status_code == 200
+            assert r.json()["quantity"] == 15.0
+
+            # 404 cases
+            r = requests.put(f"{API}/tires/nonexistent-id", headers=h1,
+                             json=payloads[0], timeout=20)
+            assert r.status_code == 404
+            r = requests.post(f"{API}/tires/nonexistent-id/movement", headers=h1,
+                              json={"delta": 1, "reason": "alis"}, timeout=20)
+            assert r.status_code == 404
+        finally:
+            for cid in created_ids:
+                requests.delete(f"{API}/tires/{cid}", headers=h1, timeout=20)
+
+
+# ---------- SAMPIYON — Chat & Import-Confirm (Iteration-7) ----------
+class TestSampiyon:
+    def test_chat_requires_auth(self):
+        r = requests.post(f"{API}/sampiyon/chat",
+                          json={"message": "merhaba", "history": []}, timeout=20)
+        assert r.status_code in (401, 403)
+
+    def test_chat_search_tires_tool(self, h1):
+        """Seed 2 tires then ask Şampiyon to search; verify tool invocation + reply.
+        Slow (LLM); allow up to 120s."""
+        seeds = [
+            {"brand": "TEST_SAMPIYON_Pirelli", "model": "P7", "size": "195/65 R15",
+             "season": "yaz", "quantity": 6, "buy_price": 1800, "sell_price": 2400},
+            {"brand": "TEST_SAMPIYON_Goodyear", "model": "UG9", "size": "195/65 R15",
+             "season": "kis", "quantity": 5, "buy_price": 2000, "sell_price": 2700},
+        ]
+        ids = []
+        try:
+            for s in seeds:
+                r = requests.post(f"{API}/tires", headers=h1, json=s, timeout=20)
+                assert r.status_code == 200, r.text
+                ids.append(r.json()["id"])
+
+            r = requests.post(f"{API}/sampiyon/chat", headers=h1, json={
+                "message": "195/65 R15 ebatında kaç adet TEST_SAMPIYON lastik var? Marka ve adet bazında kısaca listele.",
+                "history": [],
+            }, timeout=120)
+            if r.status_code != 200:
+                pytest.skip(f"Şampiyon chat unavailable: {r.status_code} {r.text[:200]}")
+            data = r.json()
+            assert "reply" in data
+            assert isinstance(data.get("tool_trace"), list)
+            tool_names = [t["name"] for t in data["tool_trace"]]
+            # Model should invoke at least one tire-querying tool
+            assert any(n in ("search_tires", "get_stock_summary") for n in tool_names), \
+                f"Expected search_tires in tool_trace, got {tool_names}"
+            # Result from search_tires should include our seeded brands
+            found_brand = False
+            for t in data["tool_trace"]:
+                if t["name"] == "search_tires":
+                    items = (t.get("result") or {}).get("items", [])
+                    if any("TEST_SAMPIYON" in (it.get("brand") or "") for it in items):
+                        found_brand = True
+            # Soft assertion: at minimum reply must be non-empty text
+            assert isinstance(data["reply"], str) and len(data["reply"]) > 0
+            # Record (not fatal) if brand not surfaced — LLM may filter
+            if not found_brand:
+                print("[warn] TEST_SAMPIYON brand not seen in search_tires items")
+        finally:
+            for cid in ids:
+                requests.delete(f"{API}/tires/{cid}", headers=h1, timeout=20)
+
+    def test_import_confirm_small_payload(self, h1):
+        """POST /api/sampiyon/import-confirm with 2 items → both created."""
+        payload = {
+            "items": [
+                {"brand": "TEST_IMP_A", "model": "X", "size": "185/60 R14",
+                 "season": "4mevsim", "quantity": 2, "buy_price": 900,
+                 "sell_price": 1200, "kdv_rate": 20},
+                {"brand": "TEST_IMP_B", "model": "Y", "size": "225/50 R17",
+                 "season": "yaz", "quantity": 3, "buy_price": 2200,
+                 "sell_price": 2900, "kdv_rate": 20},
+            ]
+        }
+        r = requests.post(f"{API}/sampiyon/import-confirm",
+                          headers=h1, json=payload, timeout=30)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["count"] == 2
+        assert len(data["items"]) == 2
+        created_ids = [it["id"] for it in data["items"]]
+        try:
+            # Verify persistence via GET /api/tires
+            r = requests.get(f"{API}/tires", headers=h1, timeout=20)
+            assert r.status_code == 200
+            all_ids = {t["id"] for t in r.json()}
+            for cid in created_ids:
+                assert cid in all_ids
+            brands = {t["brand"] for t in r.json() if t["id"] in created_ids}
+            assert brands == {"TEST_IMP_A", "TEST_IMP_B"}
+        finally:
+            for cid in created_ids:
+                requests.delete(f"{API}/tires/{cid}", headers=h1, timeout=20)
+
+    def test_import_confirm_empty_rejects(self, h1):
+        r = requests.post(f"{API}/sampiyon/import-confirm",
+                          headers=h1, json={"items": []}, timeout=20)
+        assert r.status_code == 400
+
+    def test_import_confirm_requires_auth(self):
+        r = requests.post(f"{API}/sampiyon/import-confirm",
+                          json={"items": [{"brand": "X", "size": "1"}]}, timeout=20)
+        assert r.status_code in (401, 403)

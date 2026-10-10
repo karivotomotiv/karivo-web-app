@@ -552,55 +552,7 @@ def _normalize_date_str(s: str) -> str:
             pass
     return _resolve_date(None)
 
-# ---- Stok ----
-@api_router.get("/inventory", response_model=List[InventoryOut])
-async def list_inventory(user: dict = Depends(get_current_user)):
-    return await db.inventory.find({}, {"_id": 0}).sort("product_name", 1).to_list(5000)
-
-@api_router.post("/inventory", response_model=InventoryOut)
-async def create_inventory(data: InventoryIn, user: dict = Depends(get_current_user)):
-    doc = {
-        "id": str(uuid.uuid4()),
-        "product_name": data.product_name,
-        "required_qty": float(data.required_qty),
-        "received_qty": float(data.received_qty),
-        "remaining_qty": round(float(data.required_qty) - float(data.received_qty), 2),
-        "purchase_date": _resolve_date(data.purchase_date),
-        "purchase_price": float(data.purchase_price),
-        "created_by": user["id"],
-        "created_by_name": user["name"],
-        "created_at": now_iso(),
-    }
-    await db.inventory.insert_one(doc)
-    await log_activity(user, "create", "Stok", f"{doc['product_name']} / kalan: {doc['remaining_qty']}")
-    doc.pop("_id", None)
-    return doc
-
-@api_router.put("/inventory/{item_id}", response_model=InventoryOut)
-async def update_inventory(item_id: str, data: InventoryIn, user: dict = Depends(get_current_user)):
-    update = {
-        "product_name": data.product_name,
-        "required_qty": float(data.required_qty),
-        "received_qty": float(data.received_qty),
-        "remaining_qty": round(float(data.required_qty) - float(data.received_qty), 2),
-        "purchase_price": float(data.purchase_price),
-    }
-    if data.purchase_date:
-        update["purchase_date"] = data.purchase_date
-    res = await db.inventory.find_one_and_update({"id": item_id}, {"$set": update})
-    if not res:
-        raise HTTPException(404, "Stok kaydı bulunamadı")
-    await log_activity(user, "update", "Stok", f"{data.product_name}")
-    return await db.inventory.find_one({"id": item_id}, {"_id": 0})
-
-@api_router.delete("/inventory/{item_id}")
-async def delete_inventory(item_id: str, user: dict = Depends(get_current_user)):
-    doc = await db.inventory.find_one({"id": item_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(404, "Stok kaydı bulunamadı")
-    await db.inventory.delete_one({"id": item_id})
-    await log_activity(user, "delete", "Stok", f"{doc.get('product_name','')}")
-    return {"ok": True}
+# ---- Stok (eski /api/inventory CRUD kaldırıldı — /api/tires kullanın) ----
 
 # ---- Cariler ----
 CariType = Literal["alacak", "borc", "odeme"]  # alacak = bize borçlu, borc = biz borçluyuz, odeme = gelen ödeme (alacaktan düşer)
