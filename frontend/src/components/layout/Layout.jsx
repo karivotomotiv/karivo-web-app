@@ -1,4 +1,4 @@
-import { NavLink, Outlet, Navigate } from "react-router-dom";
+import { NavLink, Outlet, Navigate, useLocation } from "react-router-dom";
 import { useState, useEffect, Fragment } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,8 @@ import {
   Users,
   ShoppingCart,
   Scale,
+  CalendarDays,
+  Menu,
 } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 
@@ -29,6 +31,7 @@ const NAV = [
   { to: "/cariler", label: "Cariler", icon: Users, testId: "nav-cariler" },
   { to: "/faturalar", label: "Faturalar", icon: FileText, testId: "nav-faturalar" },
   { to: "/stok", label: "Lastik Stok", icon: Package, testId: "nav-stok" },
+  { to: "/aylik-rapor", label: "Aylık Rapor", icon: CalendarDays, testId: "nav-aylik-rapor" },
   { to: "/harcamalar", label: "Harcamalar", icon: Wallet, testId: "nav-harcamalar" },
   { to: "/yapilacaklar", label: "Yapılacaklar", icon: ListChecks, testId: "nav-yapilacaklar" },
   { to: "/islem-gunlugu", label: "İşlem Günlüğü", icon: History, testId: "nav-logs" },
@@ -38,6 +41,9 @@ export default function Layout() {
   const { user, loading, logout } = useAuth();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const location = useLocation();
+  useEffect(() => { setMenuOpen(false); }, [location.pathname]);
 
   useEffect(() => {
     const onChange = () => setRefreshKey((k) => k + 1);
@@ -56,7 +62,8 @@ export default function Layout() {
   return (
     <div className="min-h-screen bg-slate-50 flex">
       {/* Sidebar */}
-      <aside className="w-64 bg-white border-r border-slate-200 flex flex-col sticky top-0 h-screen">
+      {menuOpen && <div className="fixed inset-0 z-30 bg-slate-900/40 lg:hidden" onClick={() => setMenuOpen(false)} data-testid="mobile-menu-backdrop" />}
+      <aside className={`w-64 bg-white border-r border-slate-200 flex flex-col h-screen fixed lg:sticky top-0 left-0 z-40 transition-transform duration-200 lg:translate-x-0 ${menuOpen ? "translate-x-0" : "-translate-x-full"}`}>
         <div className="px-6 py-5 border-b border-slate-200">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center">
@@ -128,15 +135,20 @@ export default function Layout() {
 
       {/* Main */}
       <main className="flex-1 min-w-0">
-        <div className="sticky top-0 z-10 backdrop-blur-md bg-white/90 border-b border-slate-200 px-8 py-4">
-          <div className="flex items-center justify-between">
-            <h1 className="text-xl font-extrabold tracking-tight text-slate-900">
-              Karivo Otomotiv — Yönetim Paneli
-            </h1>
-            <div className="text-sm text-slate-500">{new Date().toLocaleDateString("tr-TR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div>
+        <div className="sticky top-0 z-20 backdrop-blur-md bg-white/90 border-b border-slate-200 px-4 sm:px-8 py-3 sm:py-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <button className="lg:hidden p-2 -ml-2 rounded-lg hover:bg-slate-100" onClick={() => setMenuOpen(true)} data-testid="mobile-menu-btn" aria-label="Menü">
+                <Menu className="w-5 h-5" />
+              </button>
+              <h1 className="text-base sm:text-xl font-extrabold tracking-tight text-slate-900 truncate">
+                Karivo Otomotiv<span className="hidden sm:inline"> — Yönetim Paneli</span>
+              </h1>
+            </div>
+            <div className="hidden md:block text-sm text-slate-500">{new Date().toLocaleDateString("tr-TR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div>
           </div>
         </div>
-        <div className="p-8">
+        <div className="p-4 sm:p-8">
           <Fragment key={refreshKey}><Outlet /></Fragment>
         </div>
       </main>

@@ -7,6 +7,7 @@ import Gelirler from "@/pages/Gelirler";
 import Giderler from "@/pages/Giderler";
 import Faturalar from "@/pages/Faturalar";
 import Stok from "@/pages/Stok";
+import AylikRapor from "@/pages/AylikRapor";
 import Harcamalar from "@/pages/Harcamalar";
 import Yapilacaklar from "@/pages/Yapilacaklar";
 import ActivityLog from "@/pages/ActivityLog";
@@ -32,6 +33,7 @@ export default function App() {
             <Route path="cariler/:id" element={<CariDetail />} />
             <Route path="faturalar" element={<Faturalar />} />
             <Route path="stok" element={<Stok />} />
+            <Route path="aylik-rapor" element={<AylikRapor />} />
             <Route path="harcamalar" element={<Harcamalar />} />
             <Route path="yapilacaklar" element={<Yapilacaklar />} />
             <Route path="islem-gunlugu" element={<ActivityLog />} />

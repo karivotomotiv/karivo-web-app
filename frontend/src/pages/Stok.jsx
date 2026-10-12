@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, formatTRY, formatDate, extractError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,12 +49,23 @@ export default function Stok() {
   const [importing, setImporting] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const fileRef = useRef(null);
+  const [params] = useSearchParams();
+  const highlightId = params.get("tire");
+  const [threshold, setThreshold] = useState(4);
 
   const load = async () => {
     try { const { data } = await api.get("/tires"); setItems(data); }
     catch (e) { toast.error(extractError(e)); }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); api.get("/settings/stock").then(({ data }) => setThreshold(data.critical_threshold)).catch(() => {}); }, []);
+  useEffect(() => {
+    if (!highlightId || !items.length) return;
+    const t = items.find((x) => x.id === highlightId);
+    if (!t) { toast.info("Ürün bulunamadı"); return; }
+    setSearch("");
+    setSeasonFilter("all");
+    setTimeout(() => document.querySelector(`[data-testid="tire-row-${highlightId}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }), 150);
+  }, [highlightId, items]);
 
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
@@ -237,9 +249,9 @@ export default function Stok() {
                 </TableCell></TableRow>
               )}
               {filtered.map((t) => {
-                const low = Number(t.quantity) < 4;
+                const low = Number(t.quantity) <= threshold;
                 return (
-                  <TableRow key={t.id} data-testid={`tire-row-${t.id}`}>
+                  <TableRow key={t.id} data-testid={`tire-row-${t.id}`} className={t.id === highlightId ? "bg-amber-50 ring-2 ring-inset ring-amber-300" : ""}>
                     <TableCell>
                       <div className="font-semibold text-slate-900">{t.brand}</div>
                       {t.model && <div className="text-xs text-slate-500">{t.model}</div>}

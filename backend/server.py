@@ -1382,12 +1382,14 @@ def _render_low_stock_email(user_name: str, items: list) -> str:
 
 
 @api_router.get("/inventory/alerts")
-async def inventory_alerts(user: dict = Depends(get_current_user), threshold: float = 4):
-    """Stok seviyesi eşiğin altında olan lastikler (varsayılan: 4 adet)."""
+async def inventory_alerts(user: dict = Depends(get_current_user), threshold: Optional[float] = None):
+    """Stok adedi genel kritik eşiğe eşit/altında olan lastikler."""
+    if threshold is None:
+        threshold = await _get_critical_threshold()
     all_items = await db.tires.find({}, {"_id": 0}).to_list(5000)
     low = []
     for d in all_items:
-        if float(d.get("quantity", 0)) < threshold:
+        if float(d.get("quantity", 0)) <= threshold:
             _tire_as_legacy(d)
             # UI'nin low-stock banner'ı 'remaining_qty > 0' bekliyor, biz 'eksik miktarı' pozitif gösterelim
             d["remaining_qty"] = max(0.0, threshold - float(d.get("quantity", 0)))
@@ -1399,11 +1401,11 @@ async def inventory_alerts(user: dict = Depends(get_current_user), threshold: fl
 @api_router.post("/inventory/send-low-stock-email")
 async def send_low_stock_email(user: dict = Depends(get_current_user)):
     """Düşük stok uyarısını kullanıcıların kayıtlı bildirim e-postalarına gönderir."""
-    threshold = 4
+    threshold = await _get_critical_threshold()
     all_items = await db.tires.find({}, {"_id": 0}).to_list(5000)
     low = []
     for d in all_items:
-        if float(d.get("quantity", 0)) < threshold:
+        if float(d.get("quantity", 0)) <= threshold:
             low.append({
                 "product_name": _tire_label(d),
                 "required_qty": threshold,
@@ -1510,7 +1512,7 @@ def _render_monthly_report_email(user_name: str, month_label: str, totals: dict,
         f'<table role="presentation" width="100%" style="margin-bottom:24px"><tr>'
         f'<td style="padding:12px;background:#f1f5f9;border-radius:8px"><div style="font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:1px">Fatura Toplamı (KDV Dahil)</div><div style="font-size:16px;font-weight:700">{tr(totals["invoice"])}</div></td>'
         f'<td style="width:8px"></td>'
-        f'<td style="padding:12px;background:#f1f5f9;border-radius:8px"><div style="font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:1px">Net Kâr</div><div style="font-size:16px;font-weight:800;color:{profit_color}">{tr(profit)}</div></td>'
+        f'<td style="padding:12px;background:#f1f5f9;border-radius:8px"><div style="font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:1px">Gelir − Gider Farkı</div><div style="font-size:16px;font-weight:800;color:{profit_color}">{tr(profit)}</div></td>'
         f'</tr></table>'
         # Top items
         f'<h3 style="margin:16px 0 8px 0;font-size:14px;text-transform:uppercase;letter-spacing:1px;color:#475569">En Büyük 5 Gelir</h3>'
@@ -1658,7 +1660,6 @@ async def monthly_trend(user: dict = Depends(get_current_user)):
     incomes = await db.incomes.find({}, {"_id": 0, "date": 1, "amount": 1}).to_list(10000)
     expenses = await db.expenses.find({}, {"_id": 0, "date": 1, "amount": 1}).to_list(10000)
     invoices = await db.invoices.find({}, {"_id": 0, "date": 1, "amount": 1, "vat_amount": 1}).to_list(10000)
-    cari_txs = await db.cari_transactions.find({}, {"_id": 0, "date": 1, "type": 1, "amount": 1}).to_list(10000)
 
     buckets: dict = {}
     for row in incomes:
@@ -1675,17 +1676,6 @@ async def monthly_trend(user: dict = Depends(get_current_user)):
             b = buckets.setdefault(m, {"month": m, "income": 0, "expense": 0, "invoice": 0, "vat": 0})
             b["invoice"] += float(row.get("amount", 0))
             b["vat"] += float(row.get("vat_amount", 0))
-    for row in cari_txs:
-        m = _month(row.get("date"))
-        if not m:
-            continue
-        b = buckets.setdefault(m, {"month": m, "income": 0, "expense": 0, "invoice": 0, "vat": 0})
-        if row.get("type") == "alacak":
-            b["income"] += float(row.get("amount", 0))
-        elif row.get("type") == "borc":
-            b["expense"] += float(row.get("amount", 0))
-        # odeme: not reflected in dashboard income/expense (only affects per-cari remaining)
-
     rows = []
     for m in sorted(buckets.keys()):
         b = buckets[m]
@@ -1695,7 +1685,7 @@ async def monthly_trend(user: dict = Depends(get_current_user)):
             "expense": round(b["expense"], 2),
             "invoice": round(b["invoice"], 2),
             "vat": round(b["vat"], 2),
-            "profit": round(b["income"] - b["expense"], 2),
+            "diff": round(b["income"] - b["expense"], 2),
         })
     return rows[-12:]  # son 12 ay
 
@@ -1844,6 +1834,185 @@ async def import_invoices_confirm(data: ImportConfirmIn, user: dict = Depends(ge
 async def list_logs(limit: int = 500, user: dict = Depends(get_current_user)):
     docs = await db.activity_logs.find({}, {"_id": 0}).sort("timestamp", -1).to_list(limit)
     return docs
+
+# ---- Dashboard v2: dönem özeti, stok, cari alacak, aylık rapor ----
+DEFAULT_CRITICAL_STOCK = 4.0
+
+
+async def _get_critical_threshold() -> float:
+    doc = await db.settings.find_one({"key": "stock"}, {"_id": 0})
+    return float(doc["critical_threshold"]) if doc and doc.get("critical_threshold") is not None else DEFAULT_CRITICAL_STOCK
+
+
+class StockSettingsIn(BaseModel):
+    critical_threshold: float = Field(ge=0, le=10000)
+
+
+@api_router.get("/settings/stock")
+async def get_stock_settings(user: dict = Depends(get_current_user)):
+    return {"critical_threshold": await _get_critical_threshold()}
+
+
+@api_router.put("/settings/stock")
+async def update_stock_settings(data: StockSettingsIn, user: dict = Depends(get_current_user)):
+    await db.settings.update_one({"key": "stock"}, {"$set": {"key": "stock", "critical_threshold": float(data.critical_threshold)}}, upsert=True)
+    await log_activity(user, "update", "Stok", f"Kritik stok eşiği: {data.critical_threshold}")
+    return {"critical_threshold": float(data.critical_threshold)}
+
+
+def _r2(x: float) -> float:
+    return round(float(x or 0), 2)
+
+
+async def _period_finance(start: str, end: str) -> dict:
+    """Seçili tarih aralığı (YYYY-MM-DD, dahil) için finans, satış ve tahsilat özetleri."""
+    rng = {"$gte": start, "$lte": end}
+    inc = await db.incomes.find({"date": rng}, {"_id": 0, "amount": 1}).to_list(20000)
+    exp = await db.expenses.find({"date": rng}, {"_id": 0, "amount": 1}).to_list(20000)
+    sp = await db.spendings.find({"date": rng, "category": "company"}, {"_id": 0, "amount": 1}).to_list(20000)
+    sales = await db.sales.find({"date": rng, "reversed": {"$ne": True}}, {"_id": 0, "total": 1, "payment_method": 1, "items": 1}).to_list(20000)
+    pays = await db.cari_transactions.find({"date": rng, "type": "odeme"}, {"_id": 0, "amount": 1}).to_list(20000)
+
+    by_pay = {k: 0.0 for k in ("nakit", "kart", "havale", "veresiye")}
+    for s in sales:
+        by_pay[s.get("payment_method", "nakit")] = by_pay.get(s.get("payment_method", "nakit"), 0) + float(s.get("total", 0))
+    income_total = sum(float(x.get("amount", 0)) for x in inc)
+    expense_total = sum(float(x.get("amount", 0)) for x in exp)
+    cash_sales = by_pay["nakit"] + by_pay["kart"] + by_pay["havale"]
+    cari_payments = sum(float(x.get("amount", 0)) for x in pays)
+    return {
+        "range": {"start": start, "end": end},
+        "income_total": _r2(income_total), "income_count": len(inc),
+        "expense_total": _r2(expense_total), "expense_count": len(exp),
+        "income_expense_diff": _r2(income_total - expense_total),
+        "company_spending_total": _r2(sum(float(x.get("amount", 0)) for x in sp)), "company_spending_count": len(sp),
+        "sales_revenue": _r2(sum(float(s.get("total", 0)) for s in sales)),
+        "sales_count": len(sales),
+        "sales_tire_qty": _r2(sum(float(i.get("quantity", 0)) for s in sales for i in s.get("items", []))),
+        "sales_by_payment": {k: _r2(v) for k, v in by_pay.items()},
+        "collections_total": _r2(cash_sales + cari_payments),
+        "collections_cash_sales": _r2(cash_sales),
+        "collections_cari_payments": _r2(cari_payments), "cari_payment_count": len(pays),
+    }
+
+
+async def _stock_snapshot() -> dict:
+    threshold = await _get_critical_threshold()
+    tires = await db.tires.find({}, {"_id": 0}).to_list(10000)
+    out, critical = [], []
+    for t in tires:
+        q = float(t.get("quantity", 0))
+        row = {"id": t["id"], "brand": t.get("brand", ""), "model": t.get("model", ""), "size": t.get("size", ""),
+               "season": t.get("season", ""), "quantity": q}
+        if q <= 0:
+            out.append(row)
+        elif q <= threshold:
+            critical.append(row)
+    critical.sort(key=lambda r: r["quantity"])
+    return {
+        "threshold": threshold,
+        "product_count": len(tires),
+        "total_qty": _r2(sum(max(0.0, float(t.get("quantity", 0))) for t in tires)),
+        "critical_count": len(critical),
+        "out_of_stock_count": len(out),
+        "critical": critical,
+        "out_of_stock": out,
+    }
+
+
+async def _receivables_snapshot() -> dict:
+    """Müşterilerin açık alacak bakiyesi = alacak − gelen ödeme (sadece > 0 olanlar)."""
+    txs = await db.cari_transactions.find({}, {"_id": 0, "cari_id": 1, "type": 1, "amount": 1}).to_list(50000)
+    cariler = {c["id"]: c["name"] for c in await db.cariler.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(10000)}
+    agg: dict = {}
+    for t in txs:
+        if t.get("cari_id") not in cariler:
+            continue
+        a = agg.setdefault(t["cari_id"], {"alacak": 0.0, "odeme": 0.0})
+        if t["type"] in ("alacak", "odeme"):
+            a[t["type"]] += float(t.get("amount", 0))
+    rows = []
+    for cid, a in agg.items():
+        rem = round(a["alacak"] - a["odeme"], 2)
+        if rem > 0.005:
+            rows.append({"id": cid, "name": cariler[cid], "total_alacak": _r2(a["alacak"]), "total_odeme": _r2(a["odeme"]), "remaining": rem})
+    rows.sort(key=lambda r: r["remaining"], reverse=True)
+    return {"total": _r2(sum(r["remaining"] for r in rows)), "debtor_count": len(rows), "items": rows}
+
+
+async def _integrity_warnings() -> list:
+    warnings = []
+    sales = await db.sales.find({"reversed": {"$ne": True}}, {"_id": 0, "id": 1, "date": 1, "total": 1, "payment_method": 1, "income_id": 1, "cari_tx_id": 1}).to_list(20000)
+    inc_ids = {d["id"] for d in await db.incomes.find({"sale_id": {"$exists": True}}, {"_id": 0, "id": 1}).to_list(50000)}
+    tx_ids = {d["id"] for d in await db.cari_transactions.find({"sale_id": {"$exists": True}}, {"_id": 0, "id": 1}).to_list(50000)}
+    missing_inc = [s for s in sales if s.get("payment_method") != "veresiye" and s.get("income_id") and s["income_id"] not in inc_ids]
+    missing_tx = [s for s in sales if s.get("payment_method") == "veresiye" and s.get("cari_tx_id") and s["cari_tx_id"] not in tx_ids]
+    if missing_inc:
+        warnings.append({"type": "sale_income_missing", "count": len(missing_inc), "amount": _r2(sum(s["total"] for s in missing_inc)),
+                         "message": f"{len(missing_inc)} peşin satışın bağlı gelir kaydı silinmiş; bu satışlar satış cirosunda var, gelirde yok."})
+    if missing_tx:
+        warnings.append({"type": "sale_cari_tx_missing", "count": len(missing_tx), "amount": _r2(sum(s["total"] for s in missing_tx)),
+                         "message": f"{len(missing_tx)} veresiye satışın cari alacak kaydı silinmiş; cari alacakta görünmüyor."})
+    return warnings
+
+
+def _valid_date(d: str) -> str:
+    try:
+        datetime.strptime(d, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        raise HTTPException(400, "Tarih formatı YYYY-MM-DD olmalı")
+    return d
+
+
+def _month_range(month: str) -> tuple:
+    try:
+        first = datetime.strptime(month, "%Y-%m")
+    except (ValueError, TypeError):
+        raise HTTPException(400, "Ay formatı YYYY-MM olmalı")
+    nxt = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
+    prev = (first - timedelta(days=1)).replace(day=1)
+    return first.strftime("%Y-%m-%d"), (nxt - timedelta(days=1)).strftime("%Y-%m-%d"), prev.strftime("%Y-%m")
+
+
+@api_router.get("/dashboard/overview")
+async def dashboard_overview(start: str, end: str, user: dict = Depends(get_current_user)):
+    start, end = _valid_date(start), _valid_date(end)
+    if start > end:
+        raise HTTPException(400, "Başlangıç tarihi bitişten sonra olamaz")
+    return {
+        "finance": await _period_finance(start, end),
+        "stock": await _stock_snapshot(),
+        "receivables": await _receivables_snapshot(),
+        "warnings": await _integrity_warnings(),
+        "as_of": now_iso(),
+    }
+
+
+@api_router.get("/reports/monthly")
+async def monthly_report(month: str, details: bool = False, user: dict = Depends(get_current_user)):
+    start, end, prev_month = _month_range(month)
+    pstart, pend, _ = _month_range(prev_month)
+    res = {"month": month, "previous_month": prev_month,
+           "current": await _period_finance(start, end), "previous": await _period_finance(pstart, pend)}
+    mvs = await db.stock_movements.find({"date": {"$gte": start, "$lte": end}}, {"_id": 0}).sort("created_at", -1).to_list(20000)
+    res["stock_movements_summary"] = {
+        "count": len(mvs),
+        "in_qty": _r2(sum(m["delta"] for m in mvs if float(m.get("delta", 0)) > 0)),
+        "out_qty": _r2(-sum(m["delta"] for m in mvs if float(m.get("delta", 0)) < 0)),
+    }
+    if details:
+        rng = {"$gte": start, "$lte": end}
+        res["incomes"] = await db.incomes.find({"date": rng}, {"_id": 0}).sort("date", -1).to_list(5000)
+        res["expenses"] = await db.expenses.find({"date": rng}, {"_id": 0}).sort("date", -1).to_list(5000)
+        res["sales"] = await db.sales.find({"date": rng, "reversed": {"$ne": True}}, {"_id": 0, "movement_ids": 0}).sort("date", -1).to_list(5000)
+        pays = await db.cari_transactions.find({"date": rng, "type": "odeme"}, {"_id": 0}).sort("date", -1).to_list(5000)
+        names = {c["id"]: c["name"] for c in await db.cariler.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(10000)}
+        for p in pays:
+            p["cari_name"] = names.get(p["cari_id"], "—")
+        res["cari_payments"] = pays
+        res["stock_movements"] = mvs[:1000]
+    return res
+
 
 # ---- Dashboard summary ----
 @api_router.get("/summary")
