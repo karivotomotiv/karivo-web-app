@@ -10,7 +10,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableFooter } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { Plus, Pencil, Trash2, Package, Search, Upload, ArrowDown, ArrowUp, Sparkles, Check, X } from "lucide-react";
+import { Plus, Pencil, Trash2, Package, Search, Upload, ArrowDown, ArrowUp, Sparkles, Check, X, CircleDot, Boxes, ChevronDown } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 
 const SEASON_META = {
@@ -28,12 +29,15 @@ const MOVEMENT_REASONS = [
   { value: "diger", label: "Diğer" },
 ];
 
-const emptyTire = { brand: "", model: "", size: "", season: "4mevsim", dot: "", quantity: 0, buy_price: 0, sell_price: 0, kdv_rate: 20, note: "" };
+const emptyTire = { product_type: "lastik", name: "", category: "", unit: "adet", brand: "", model: "", size: "", season: "4mevsim", dot: "", quantity: 0, buy_price: 0, sell_price: 0, kdv_rate: 20, note: "" };
+const UNITS = ["adet", "takım", "litre", "kutu", "paket", "metre"];
+const isOther = (t) => t.product_type === "diger";
 
 export default function Stok() {
   const [items, setItems] = useState([]);
   const [search, setSearch] = useState("");
   const [seasonFilter, setSeasonFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyTire);
@@ -70,17 +74,20 @@ export default function Stok() {
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
     return items.filter((t) => {
-      if (seasonFilter !== "all" && t.season !== seasonFilter) return false;
+      const type = isOther(t) ? "diger" : "lastik";
+      if (typeFilter !== "all" && type !== typeFilter) return false;
+      if (seasonFilter !== "all" && (isOther(t) || t.season !== seasonFilter)) return false;
       if (!s) return true;
-      const hay = `${t.brand} ${t.model} ${t.size} ${t.dot} ${t.note}`.toLowerCase();
+      const hay = `${t.name || ""} ${t.category || ""} ${t.brand} ${t.model} ${t.size} ${t.dot} ${t.note}`.toLowerCase();
       return hay.includes(s);
     });
-  }, [items, search, seasonFilter]);
+  }, [items, search, seasonFilter, typeFilter]);
 
-  const openNew = () => { setEditing(null); setForm({ ...emptyTire }); setOpen(true); };
+  const openNew = (product_type = "lastik") => { setEditing(null); setForm({ ...emptyTire, product_type }); setOpen(true); };
   const openEdit = (it) => {
     setEditing(it);
     setForm({
+      product_type: it.product_type || "lastik", name: it.name || "", category: it.category || "", unit: it.unit || "adet",
       brand: it.brand || "", model: it.model || "", size: it.size || "",
       season: it.season || "4mevsim", dot: it.dot || "", quantity: it.quantity || 0,
       buy_price: it.buy_price || 0, sell_price: it.sell_price || 0,
@@ -91,22 +98,24 @@ export default function Stok() {
 
   const save = async (e) => {
     e?.preventDefault();
-    if (!form.brand.trim() || !form.size.trim()) { toast.error("Marka ve ebat zorunludur"); return; }
+    const other = form.product_type === "diger";
+    if (other ? !form.name.trim() : !form.brand.trim() || !form.size.trim()) { toast.error(other ? "Ürün adı zorunludur" : "Marka ve ebat zorunludur"); return; }
     setLoading(true);
     try {
       const payload = {
         ...form,
-        brand: form.brand.trim(), model: form.model.trim(), size: form.size.trim(),
+        name: form.name.trim(), category: form.category.trim(),
+        brand: form.brand.trim(), model: form.model.trim(), size: other ? "" : form.size.trim(),
         dot: form.dot.trim(), note: form.note.trim(),
         quantity: Number(form.quantity), buy_price: Number(form.buy_price),
         sell_price: Number(form.sell_price), kdv_rate: Number(form.kdv_rate),
       };
       if (editing) {
         await api.put(`/tires/${editing.id}`, payload);
-        toast.success("Lastik güncellendi");
+        toast.success("Ürün güncellendi");
       } else {
         await api.post("/tires", payload);
-        toast.success("Lastik eklendi");
+        toast.success(other ? "Ürün eklendi" : "Lastik eklendi");
       }
       setOpen(false); load();
     } catch (e) { toast.error(extractError(e)); }
@@ -114,7 +123,7 @@ export default function Stok() {
   };
 
   const remove = async (it) => {
-    if (!window.confirm(`"${it.brand} ${it.size}" lastiğini silmek istiyor musunuz?`)) return;
+    if (!window.confirm(`"${isOther(it) ? it.name : `${it.brand} ${it.size}`}" ürününü silmek istiyor musunuz?`)) return;
     try { await api.delete(`/tires/${it.id}`); toast.success("Silindi"); load(); }
     catch (e) { toast.error(extractError(e)); }
   };
@@ -188,8 +197,8 @@ export default function Stok() {
             <Package className="w-6 h-6" />
           </div>
           <div>
-            <h2 className="text-3xl font-extrabold tracking-tight text-slate-900">Lastik Stok</h2>
-            <p className="text-sm text-slate-600 mt-1">Marka, ebat, mevsim ve DOT bilgisiyle lastik envanterinizi yönetin.</p>
+            <h2 className="text-3xl font-extrabold tracking-tight text-slate-900">Stok</h2>
+            <p className="text-sm text-slate-600 mt-1">Lastik ve diğer ürün envanterinizi tek yerden yönetin.</p>
           </div>
         </div>
         <div className="flex gap-2 flex-wrap">
@@ -198,9 +207,21 @@ export default function Stok() {
             <Sparkles className="w-4 h-4 mr-2 text-indigo-600" />
             {importing ? "Şampiyon okuyor..." : "AI ile Belge Yükle"}
           </Button>
-          <Button onClick={openNew} className="bg-slate-900 hover:bg-slate-800 text-white" data-testid="tire-add-btn">
-            <Plus className="w-4 h-4 mr-2" /> Yeni Lastik
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button className="bg-slate-900 hover:bg-slate-800 text-white" data-testid="tire-add-btn">
+                <Plus className="w-4 h-4 mr-2" /> Stok Ekle <ChevronDown className="w-4 h-4 ml-1" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuItem onClick={() => openNew("lastik")} data-testid="stock-add-tire">
+                <CircleDot className="w-4 h-4 mr-2" /> Lastik Stok <span className="ml-auto text-[10px] text-slate-400">standart</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => openNew("diger")} data-testid="stock-add-other">
+                <Boxes className="w-4 h-4 mr-2" /> Diğer
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
@@ -216,7 +237,12 @@ export default function Stok() {
         <CardContent className="p-4 border-b border-slate-100 flex items-center gap-3 flex-wrap">
           <div className="relative flex-1 min-w-[220px] max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-            <Input placeholder="Marka, ebat, model, DOT ara..." className="pl-9" value={search} onChange={(e) => setSearch(e.target.value)} data-testid="tire-search" />
+            <Input placeholder="Ürün adı, marka, ebat, DOT ara..." className="pl-9" value={search} onChange={(e) => setSearch(e.target.value)} data-testid="tire-search" />
+          </div>
+          <div className="inline-flex rounded-lg bg-slate-100 p-1" data-testid="stock-type-filter">
+            {[["all", "Tümü"], ["lastik", "Lastik"], ["diger", "Diğer"]].map(([v, l]) => (
+              <button key={v} onClick={() => setTypeFilter(v)} className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors ${typeFilter === v ? "bg-white shadow-sm text-slate-900" : "text-slate-500 hover:text-slate-900"}`} data-testid={`stock-type-${v}`}>{l}</button>
+            ))}
           </div>
           <Select value={seasonFilter} onValueChange={setSeasonFilter}>
             <SelectTrigger className="w-44" data-testid="tire-season-filter"><SelectValue placeholder="Mevsim" /></SelectTrigger>
@@ -232,9 +258,9 @@ export default function Stok() {
           <Table>
             <TableHeader>
               <TableRow className="bg-slate-50">
-                <TableHead>Marka / Model</TableHead>
+                <TableHead>Ürün</TableHead>
                 <TableHead>Ebat</TableHead>
-                <TableHead>Mevsim</TableHead>
+                <TableHead>Tür / Mevsim</TableHead>
                 <TableHead>DOT</TableHead>
                 <TableHead className="text-right">Adet</TableHead>
                 <TableHead className="text-right">Alış</TableHead>
@@ -245,7 +271,7 @@ export default function Stok() {
             <TableBody>
               {filtered.length === 0 && (
                 <TableRow><TableCell colSpan={8} className="text-center text-slate-500 py-12">
-                  {items.length === 0 ? 'Henüz lastik yok. "Yeni Lastik" ile ekleyin veya AI ile belge yükleyin.' : "Arama/filtre ile eşleşen lastik yok."}
+                  {items.length === 0 ? 'Henüz ürün yok. "Stok Ekle" ile ekleyin veya AI ile belge yükleyin.' : "Arama/filtre ile eşleşen ürün yok."}
                 </TableCell></TableRow>
               )}
               {filtered.map((t) => {
@@ -253,16 +279,21 @@ export default function Stok() {
                 return (
                   <TableRow key={t.id} data-testid={`tire-row-${t.id}`} className={t.id === highlightId ? "bg-amber-50 ring-2 ring-inset ring-amber-300" : ""}>
                     <TableCell>
-                      <div className="font-semibold text-slate-900">{t.brand}</div>
-                      {t.model && <div className="text-xs text-slate-500">{t.model}</div>}
+                      <div className="font-semibold text-slate-900">{isOther(t) ? t.name : t.brand}</div>
+                      {(isOther(t) ? [t.brand, t.model].filter(Boolean).join(" ") : t.model) && <div className="text-xs text-slate-500">{isOther(t) ? [t.brand, t.model].filter(Boolean).join(" ") : t.model}</div>}
                     </TableCell>
-                    <TableCell className="font-mono text-sm text-slate-700">{t.size}</TableCell>
+                    <TableCell className="font-mono text-sm text-slate-700">{isOther(t) ? "—" : t.size}</TableCell>
                     <TableCell>
-                      <Badge variant="outline" className={SEASON_META[t.season]?.color}>{SEASON_META[t.season]?.label || t.season}</Badge>
+                      {isOther(t) ? (
+                        <Badge variant="outline" className="bg-violet-50 text-violet-700 border-violet-200">{t.category || "Diğer"}</Badge>
+                      ) : (
+                        <Badge variant="outline" className={SEASON_META[t.season]?.color}>{SEASON_META[t.season]?.label || t.season}</Badge>
+                      )}
                     </TableCell>
                     <TableCell className="text-slate-500 text-xs">{t.dot || "-"}</TableCell>
                     <TableCell className="text-right">
                       <span className={`font-extrabold ${low ? "text-rose-700" : "text-slate-900"}`}>{t.quantity}</span>
+                      {isOther(t) && t.unit && t.unit !== "adet" && <span className="text-xs text-slate-500 ml-1">{t.unit}</span>}
                       {low && <div className="text-xs text-rose-500">Düşük</div>}
                     </TableCell>
                     <TableCell className="text-right text-slate-700">{formatTRY(t.buy_price)}</TableCell>
@@ -306,22 +337,44 @@ export default function Stok() {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>{editing ? "Lastiği Düzenle" : "Yeni Lastik"}</DialogTitle>
-            <DialogDescription>Marka ve ebat zorunludur. İlk kayıtta girilen adet açılış stokudur.</DialogDescription>
+            <DialogTitle>
+              {form.product_type === "diger" ? (editing ? "Ürünü Düzenle" : "Yeni Ürün — Diğer") : (editing ? "Lastiği Düzenle" : "Yeni Lastik")}
+            </DialogTitle>
+            <DialogDescription>
+              {form.product_type === "diger" ? "Ürün adı zorunludur." : "Marka ve ebat zorunludur."} İlk kayıtta girilen adet açılış stokudur.
+            </DialogDescription>
           </DialogHeader>
           <form onSubmit={save} className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5"><Label>Marka *</Label><Input value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} data-testid="tire-form-brand" /></div>
-              <div className="space-y-1.5"><Label>Model</Label><Input value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} data-testid="tire-form-model" /></div>
-              <div className="space-y-1.5"><Label>Ebat * (ör: 205/55 R16)</Label><Input value={form.size} onChange={(e) => setForm({ ...form, size: e.target.value })} data-testid="tire-form-size" /></div>
-              <div className="space-y-1.5">
-                <Label>Mevsim</Label>
-                <Select value={form.season} onValueChange={(v) => setForm({ ...form, season: v })}>
-                  <SelectTrigger data-testid="tire-form-season"><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="yaz">Yaz</SelectItem><SelectItem value="kis">Kış</SelectItem><SelectItem value="4mevsim">4 Mevsim</SelectItem></SelectContent>
-                </Select>
+            {form.product_type === "diger" ? (
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5 col-span-2"><Label>Ürün Adı *</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="örn: Akü 72Ah" data-testid="other-form-name" /></div>
+                <div className="space-y-1.5"><Label>Kategori</Label><Input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="örn: Akü, Jant, Yağ" data-testid="other-form-category" /></div>
+                <div className="space-y-1.5">
+                  <Label>Birim</Label>
+                  <Select value={form.unit} onValueChange={(v) => setForm({ ...form, unit: v })}>
+                    <SelectTrigger data-testid="other-form-unit"><SelectValue /></SelectTrigger>
+                    <SelectContent>{UNITS.map((u) => <SelectItem key={u} value={u}>{u}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5"><Label>Marka</Label><Input value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} data-testid="other-form-brand" /></div>
+                <div className="space-y-1.5"><Label>Model</Label><Input value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} data-testid="other-form-model" /></div>
               </div>
-              <div className="space-y-1.5"><Label>DOT / Üretim</Label><Input value={form.dot} onChange={(e) => setForm({ ...form, dot: e.target.value })} data-testid="tire-form-dot" placeholder="örn: 3523" /></div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5"><Label>Marka *</Label><Input value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} data-testid="tire-form-brand" /></div>
+                <div className="space-y-1.5"><Label>Model</Label><Input value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} data-testid="tire-form-model" /></div>
+                <div className="space-y-1.5"><Label>Ebat * (ör: 205/55 R16)</Label><Input value={form.size} onChange={(e) => setForm({ ...form, size: e.target.value })} data-testid="tire-form-size" /></div>
+                <div className="space-y-1.5">
+                  <Label>Mevsim</Label>
+                  <Select value={form.season} onValueChange={(v) => setForm({ ...form, season: v })}>
+                    <SelectTrigger data-testid="tire-form-season"><SelectValue /></SelectTrigger>
+                    <SelectContent><SelectItem value="yaz">Yaz</SelectItem><SelectItem value="kis">Kış</SelectItem><SelectItem value="4mevsim">4 Mevsim</SelectItem></SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5 col-span-2"><Label>DOT / Üretim</Label><Input value={form.dot} onChange={(e) => setForm({ ...form, dot: e.target.value })} data-testid="tire-form-dot" placeholder="örn: 3523" /></div>
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5"><Label>Adet</Label><Input type="number" step="1" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} data-testid="tire-form-qty" /></div>
               <div className="space-y-1.5"><Label>Alış Fiyatı (₺)</Label><Input type="number" step="0.01" value={form.buy_price} onChange={(e) => setForm({ ...form, buy_price: e.target.value })} data-testid="tire-form-buy" /></div>
               <div className="space-y-1.5"><Label>Satış Fiyatı (₺)</Label><Input type="number" step="0.01" value={form.sell_price} onChange={(e) => setForm({ ...form, sell_price: e.target.value })} data-testid="tire-form-sell" /></div>
@@ -341,7 +394,7 @@ export default function Stok() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{mvForm.direction === "in" ? "Stok Girişi" : "Stok Çıkışı"}</DialogTitle>
-            <DialogDescription>{mvTire && `${mvTire.brand} ${mvTire.size} — Mevcut: ${mvTire.quantity} adet`}</DialogDescription>
+            <DialogDescription>{mvTire && `${mvTire.product_name} — Mevcut: ${mvTire.quantity} ${isOther(mvTire) ? mvTire.unit || "adet" : "adet"}`}</DialogDescription>
           </DialogHeader>
           <form onSubmit={saveMovement} className="space-y-3">
             <div className="grid grid-cols-2 gap-3">

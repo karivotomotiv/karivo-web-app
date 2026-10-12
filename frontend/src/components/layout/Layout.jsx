@@ -30,7 +30,7 @@ const NAV = [
   { to: "/gelir-gider", label: "Gelir / Giderler", icon: Scale, testId: "nav-gelir-gider" },
   { to: "/cariler", label: "Cariler", icon: Users, testId: "nav-cariler" },
   { to: "/faturalar", label: "Faturalar", icon: FileText, testId: "nav-faturalar" },
-  { to: "/stok", label: "Lastik Stok", icon: Package, testId: "nav-stok" },
+  { to: "/stok", label: "Stok", icon: Package, testId: "nav-stok" },
   { to: "/aylik-rapor", label: "Aylık Rapor", icon: CalendarDays, testId: "nav-aylik-rapor" },
   { to: "/harcamalar", label: "Harcamalar", icon: Wallet, testId: "nav-harcamalar" },
   { to: "/yapilacaklar", label: "Yapılacaklar", icon: ListChecks, testId: "nav-yapilacaklar" },

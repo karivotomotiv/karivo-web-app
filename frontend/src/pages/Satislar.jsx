@@ -9,7 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableFooter } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { Plus, Trash2, ShoppingCart, Receipt, X, Check, AlertCircle } from "lucide-react";
+import { Plus, Trash2, ShoppingCart, Receipt, X, Check, AlertCircle, Pencil } from "lucide-react";
 import { toast } from "sonner";
 
 const PAYMENT_META = {
@@ -38,6 +38,7 @@ export default function Satislar() {
   const [saving, setSaving] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detail, setDetail] = useState(null);
+  const [editing, setEditing] = useState(null);
 
   const load = async () => {
     try {
@@ -53,7 +54,21 @@ export default function Satislar() {
   };
   useEffect(() => { load(); }, []);
 
-  const openNew = () => { setForm(emptySale()); setOpen(true); };
+  const openNew = () => { setEditing(null); setForm(emptySale()); setOpen(true); };
+  const openEdit = (sale) => {
+    setEditing(sale);
+    setForm({
+      cari_id: sale.cari_id || "",
+      payment_method: sale.payment_method,
+      overall_discount: sale.overall_discount || 0,
+      note: sale.note || "",
+      date: sale.date,
+      items: sale.items.map((i) => ({ tire_id: i.tire_id, quantity: i.quantity, unit_price: i.unit_price, discount: i.discount || 0 })),
+    });
+    setDetailOpen(false);
+    setOpen(true);
+  };
+  const oldQty = (tireId) => (editing ? editing.items.filter((i) => i.tire_id === tireId).reduce((s, i) => s + Number(i.quantity), 0) : 0);
 
   const setLine = (idx, patch) => {
     setForm((f) => {
@@ -108,8 +123,8 @@ export default function Satislar() {
         note: form.note,
         date: form.date || null,
       };
-      const { data } = await api.post("/sales", payload);
-      toast.success(`Satış kaydedildi: ${formatTRY(data.total)}`);
+      const { data } = editing ? await api.put(`/sales/${editing.id}`, payload) : await api.post("/sales", payload);
+      toast.success(editing ? `Satış güncellendi: ${formatTRY(data.total)}` : `Satış kaydedildi: ${formatTRY(data.total)}`);
       setOpen(false);
       load();
     } catch (e) { toast.error(extractError(e)); }
@@ -121,18 +136,18 @@ export default function Satislar() {
     setDetailOpen(true);
   };
 
-  const cancelSale = async (sale) => {
-    if (!window.confirm(`Bu satışı iptal etmek istiyor musunuz?\n\nStoklar geri yüklenecek, varsa gelir ve cari alacak kaydı silinecek.`)) return;
+  const deleteSale = async (sale) => {
+    if (!window.confirm(`Bu satışı kalıcı olarak silmek istiyor musunuz?\n\nStoklar geri eklenecek (stok hareketlerinde "iade" kaydı kalır), varsa gelir ve cari alacak kaydı silinecek.`)) return;
     try {
       await api.delete(`/sales/${sale.id}`);
-      toast.success("Satış iptal edildi, stoklar geri yüklendi");
+      toast.success("Satış silindi, stoklar geri eklendi");
       setDetailOpen(false);
       load();
     } catch (e) { toast.error(extractError(e)); }
   };
 
-  const activeSales = sales.filter((s) => !s.reversed);
-  const totalSales = activeSales.reduce((s, i) => s + Number(i.total || 0), 0);
+  const totalSales = sales.reduce((s, i) => s + Number(i.total || 0), 0);
+  const veresiyeTotal = sales.filter((s) => s.payment_method === "veresiye").reduce((s, i) => s + Number(i.total || 0), 0);
 
   return (
     <div className="space-y-6">
@@ -144,7 +159,7 @@ export default function Satislar() {
           <div>
             <h2 className="text-3xl font-extrabold tracking-tight text-slate-900">Satışlar</h2>
             <p className="text-sm text-slate-600 mt-1">
-              Lastik + müşteri + ödeme — stok, gelir ve cari bakiyesi otomatik güncellenir.
+              Ürün + müşteri + ödeme — stok, gelir ve cari bakiyesi otomatik güncellenir.
             </p>
           </div>
         </div>
@@ -154,9 +169,9 @@ export default function Satislar() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <Card className="border-slate-200 shadow-sm"><CardContent className="p-4"><div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Toplam Satış</div><div className="mt-1 text-xl font-extrabold text-slate-900">{activeSales.length}</div></CardContent></Card>
+        <Card className="border-slate-200 shadow-sm"><CardContent className="p-4"><div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Toplam Satış</div><div className="mt-1 text-xl font-extrabold text-slate-900" data-testid="sale-count">{sales.length}</div></CardContent></Card>
         <Card className="border-slate-200 shadow-sm"><CardContent className="p-4"><div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Toplam Ciro</div><div className="mt-1 text-xl font-extrabold text-emerald-700" data-testid="sale-total-ciro">{formatTRY(totalSales)}</div></CardContent></Card>
-        <Card className="border-slate-200 shadow-sm"><CardContent className="p-4"><div className="text-xs font-semibold uppercase tracking-wider text-slate-500">İptal</div><div className="mt-1 text-xl font-extrabold text-slate-500">{sales.length - activeSales.length}</div></CardContent></Card>
+        <Card className="border-slate-200 shadow-sm"><CardContent className="p-4"><div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Veresiye</div><div className="mt-1 text-xl font-extrabold text-amber-700" data-testid="sale-veresiye-total">{formatTRY(veresiyeTotal)}</div></CardContent></Card>
       </div>
 
       <Card className="border-slate-200 shadow-sm">
@@ -177,7 +192,7 @@ export default function Satislar() {
                 <TableRow><TableCell colSpan={6} className="text-center text-slate-500 py-12">Henüz satış yok. "Yeni Satış" ile başlayın.</TableCell></TableRow>
               )}
               {sales.map((s) => (
-                <TableRow key={s.id} className={`cursor-pointer hover:bg-slate-50/80 ${s.reversed ? "opacity-50" : ""}`} onClick={() => openDetail(s)} data-testid={`sale-row-${s.id}`}>
+                <TableRow key={s.id} className="cursor-pointer hover:bg-slate-50/80" onClick={() => openDetail(s)} data-testid={`sale-row-${s.id}`}>
                   <TableCell className="text-slate-700">{formatDate(s.date)}</TableCell>
                   <TableCell className="font-medium text-slate-900">{s.cari_name || <span className="text-slate-400">— müşteri yok —</span>}</TableCell>
                   <TableCell className="text-sm text-slate-600">
@@ -186,10 +201,12 @@ export default function Satislar() {
                   </TableCell>
                   <TableCell>
                     <Badge variant="outline" className={PAYMENT_META[s.payment_method]?.color}>{PAYMENT_META[s.payment_method]?.label}</Badge>
-                    {s.reversed && <Badge variant="outline" className="ml-1 bg-slate-100 text-slate-500">İPTAL</Badge>}
                   </TableCell>
                   <TableCell className="text-right font-extrabold text-emerald-700">{formatTRY(s.total)}</TableCell>
-                  <TableCell></TableCell>
+                  <TableCell className="text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                    <Button variant="ghost" size="sm" onClick={() => openEdit(s)} data-testid={`sale-edit-${s.id}`}><Pencil className="w-4 h-4" /></Button>
+                    <Button variant="ghost" size="sm" onClick={() => deleteSale(s)} className="text-rose-600 hover:bg-rose-50" data-testid={`sale-delete-${s.id}`}><Trash2 className="w-4 h-4" /></Button>
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -201,8 +218,8 @@ export default function Satislar() {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Yeni Satış</DialogTitle>
-            <DialogDescription>Lastik satırları ekleyin, müşteri ve ödeme yöntemi seçin. Onayladığınızda stoktan düşer, gelir ve cari bakiyesi otomatik işlenir.</DialogDescription>
+            <DialogTitle>{editing ? "Satışı Düzenle" : "Yeni Satış"}</DialogTitle>
+            <DialogDescription>{editing && "Kaydettiğinizde eski satışın stok, gelir ve cari etkileri geri alınıp yeni değerlerle yeniden işlenir. "}Ürün satırları ekleyin, müşteri ve ödeme yöntemi seçin. Onayladığınızda stoktan düşer, gelir ve cari bakiyesi otomatik işlenir.</DialogDescription>
           </DialogHeader>
           <form onSubmit={save} className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -250,7 +267,7 @@ export default function Satislar() {
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-slate-50">
-                      <TableHead className="min-w-[260px]">Lastik</TableHead>
+                      <TableHead className="min-w-[260px]">Ürün</TableHead>
                       <TableHead className="w-24 text-right">Adet</TableHead>
                       <TableHead className="w-32 text-right">Birim Fiyat</TableHead>
                       <TableHead className="w-28 text-right">İndirim</TableHead>
@@ -261,19 +278,22 @@ export default function Satislar() {
                   <TableBody>
                     {form.items.map((l, idx) => {
                       const tire = tires.find((t) => t.id === l.tire_id);
-                      const stock = tire ? Number(tire.quantity) : 0;
+                      const stock = tire ? Number(tire.quantity) + oldQty(l.tire_id) : 0;
                       const over = tire && Number(l.quantity) > stock;
                       return (
                         <TableRow key={idx} data-testid={`sale-line-${idx}`}>
                           <TableCell>
                             <Select value={l.tire_id || ""} onValueChange={(v) => onTireChange(idx, v)}>
-                              <SelectTrigger className="h-9" data-testid={`sale-line-tire-${idx}`}><SelectValue placeholder="Lastik seçin..." /></SelectTrigger>
+                              <SelectTrigger className="h-9" data-testid={`sale-line-tire-${idx}`}><SelectValue placeholder="Ürün seçin..." /></SelectTrigger>
                               <SelectContent>
-                                {tires.map((t) => (
-                                  <SelectItem key={t.id} value={t.id} disabled={Number(t.quantity) <= 0}>
-                                    {t.brand} {t.size} ({Number(t.quantity)} adet) — {formatTRY(t.sell_price)}
-                                  </SelectItem>
-                                ))}
+                                {tires.map((t) => {
+                                  const avail = Number(t.quantity) + oldQty(t.id);
+                                  return (
+                                    <SelectItem key={t.id} value={t.id} disabled={avail <= 0}>
+                                      {t.product_name} ({avail} {t.unit || "adet"}) — {formatTRY(t.sell_price)}
+                                    </SelectItem>
+                                  );
+                                })}
                               </SelectContent>
                             </Select>
                             {over && <div className="text-xs text-rose-600 mt-1">⚠ Stok yetersiz — mevcut: {stock}</div>}
@@ -321,7 +341,7 @@ export default function Satislar() {
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>İptal</Button>
               <Button type="submit" disabled={saving || !canSave} className="bg-emerald-600 hover:bg-emerald-700 text-white" data-testid="sale-form-save">
                 <Check className="w-4 h-4 mr-2" />
-                {saving ? "Kaydediliyor..." : `Satışı Onayla — ${formatTRY(totals.total)}`}
+                {saving ? "Kaydediliyor..." : `${editing ? "Değişiklikleri Kaydet" : "Satışı Onayla"} — ${formatTRY(totals.total)}`}
               </Button>
             </DialogFooter>
           </form>
@@ -343,7 +363,7 @@ export default function Satislar() {
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-slate-50">
-                      <TableHead>Lastik</TableHead>
+                      <TableHead>Ürün</TableHead>
                       <TableHead className="text-right">Adet</TableHead>
                       <TableHead className="text-right">Birim</TableHead>
                       <TableHead className="text-right">Toplam</TableHead>
@@ -380,15 +400,20 @@ export default function Satislar() {
               {detail.note && <div className="text-sm text-slate-600"><strong>Not:</strong> {detail.note}</div>}
               <div className="text-xs text-slate-500">
                 Oluşturan: {detail.created_by_name} · {formatDate(detail.created_at)}
-                {detail.reversed && <span className="ml-2 text-rose-600 font-semibold">· İPTAL EDİLDİ</span>}
+                {detail.updated_at && ` · Son düzenleme: ${detail.updated_by_name || ""} ${formatDate(detail.updated_at)}`}
               </div>
             </div>
           )}
           <DialogFooter className="gap-2">
-            {detail && !detail.reversed && (
-              <Button variant="outline" onClick={() => cancelSale(detail)} className="text-rose-600 hover:text-rose-700 hover:bg-rose-50" data-testid="sale-cancel-btn">
-                <Trash2 className="w-4 h-4 mr-2" /> Satışı İptal Et
-              </Button>
+            {detail && (
+              <>
+                <Button variant="outline" onClick={() => deleteSale(detail)} className="text-rose-600 hover:text-rose-700 hover:bg-rose-50" data-testid="sale-delete-btn">
+                  <Trash2 className="w-4 h-4 mr-2" /> Sil
+                </Button>
+                <Button variant="outline" onClick={() => openEdit(detail)} data-testid="sale-edit-btn">
+                  <Pencil className="w-4 h-4 mr-2" /> Düzenle
+                </Button>
+              </>
             )}
             <Button onClick={() => setDetailOpen(false)}>Kapat</Button>
           </DialogFooter>

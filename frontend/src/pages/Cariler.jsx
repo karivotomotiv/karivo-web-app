@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, formatTRY, extractError } from "@/lib/api";
+import { api, formatTRY, formatDate, extractError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -113,6 +113,7 @@ export default function Cariler() {
                 <TableHead className="text-right">Toplam Alacak</TableHead>
                 <TableHead className="text-right">Toplam Borç</TableHead>
                 <TableHead className="text-right">Net</TableHead>
+                <TableHead>En Eski Açık Borç</TableHead>
                 <TableHead className="text-right">Hareket</TableHead>
                 <TableHead></TableHead>
               </TableRow>
@@ -120,7 +121,7 @@ export default function Cariler() {
             <TableBody>
               {filtered.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-slate-500 py-12">
+                  <TableCell colSpan={8} className="text-center text-slate-500 py-12">
                     {items.length === 0 ? 'Henüz cari yok. "Yeni Cari" ile ekleyin.' : "Aramayla eşleşen cari yok."}
                   </TableCell>
                 </TableRow>
@@ -146,6 +147,16 @@ export default function Cariler() {
                     <TableCell className="text-right font-semibold text-rose-700">{formatTRY(it.total_borc)}</TableCell>
                     <TableCell className={`text-right font-extrabold ${net >= 0 ? "text-emerald-700" : "text-rose-700"}`}>
                       {formatTRY(net)}
+                    </TableCell>
+                    <TableCell className="text-sm" data-testid={`cari-oldest-${it.id}`}>
+                      {it.oldest_open_date ? (
+                        <>
+                          <div className="text-slate-700">{formatDate(it.oldest_open_date)}</div>
+                          <div className={`text-xs font-semibold ${it.open_days > 60 ? "text-rose-700" : it.open_days > 30 ? "text-amber-700" : "text-slate-500"}`}>
+                            {it.open_days === 0 ? "bugün" : `${it.open_days} gündür ödenmedi`}
+                          </div>
+                        </>
+                      ) : <span className="text-slate-400">—</span>}
                     </TableCell>
                     <TableCell className="text-right text-slate-500 text-sm">{it.tx_count}</TableCell>
                     <TableCell className="text-right">

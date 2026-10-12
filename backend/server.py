@@ -577,6 +577,8 @@ class CariOut(BaseModel):
     remaining_alacak: float = 0.0
     net: float = 0.0
     tx_count: int = 0
+    oldest_open_date: Optional[str] = None
+    open_days: Optional[int] = None
     created_by: str
     created_by_name: str
     created_at: str
@@ -597,8 +599,23 @@ class CariTxOut(CariTxIn):
     created_at: str
 
 
+def _oldest_open_debt(txs: list, total_odeme: float) -> tuple:
+    """Ödemeleri en eski alacaktan başlayarak düşer (FIFO); kapanmamış ilk alacağın tarihi ve gün sayısı."""
+    left = float(total_odeme)
+    for t in sorted((x for x in txs if x["type"] == "alacak"), key=lambda x: (x.get("date") or "", x.get("created_at") or "")):
+        left -= float(t["amount"])
+        if left < -0.005:
+            d = (t.get("date") or "")[:10]
+            try:
+                days = (datetime.now(timezone.utc).date() - datetime.strptime(d, "%Y-%m-%d").date()).days
+            except ValueError:
+                return d or None, None
+            return d, max(0, days)
+    return None, None
+
+
 async def _attach_cari_totals(cari_doc: dict) -> dict:
-    txs = await db.cari_transactions.find({"cari_id": cari_doc["id"]}, {"_id": 0, "type": 1, "amount": 1}).to_list(5000)
+    txs = await db.cari_transactions.find({"cari_id": cari_doc["id"]}, {"_id": 0, "type": 1, "amount": 1, "date": 1, "created_at": 1}).to_list(5000)
     alacak = sum(float(t["amount"]) for t in txs if t["type"] == "alacak")
     borc = sum(float(t["amount"]) for t in txs if t["type"] == "borc")
     odeme = sum(float(t["amount"]) for t in txs if t["type"] == "odeme")
@@ -609,6 +626,7 @@ async def _attach_cari_totals(cari_doc: dict) -> dict:
     cari_doc["remaining_alacak"] = round(remaining_alacak, 2)
     cari_doc["net"] = round(remaining_alacak - borc, 2)
     cari_doc["tx_count"] = len(txs)
+    cari_doc["oldest_open_date"], cari_doc["open_days"] = _oldest_open_debt(txs, odeme) if remaining_alacak > 0.005 else (None, None)
     return cari_doc
 
 
@@ -739,10 +757,17 @@ async def delete_cari_tx(cari_id: str, tx_id: str, user: dict = Depends(get_curr
 TIRE_SEASONS = Literal["yaz", "kis", "4mevsim"]
 
 
+PRODUCT_TYPES = Literal["lastik", "diger"]
+
+
 class TireIn(BaseModel):
-    brand: str
+    product_type: PRODUCT_TYPES = "lastik"
+    name: Optional[str] = ""  # diğer ürünler için ürün adı
+    category: Optional[str] = ""  # diğer: jant, akü, yağ...
+    unit: Optional[str] = "adet"
+    brand: Optional[str] = ""
     model: Optional[str] = ""
-    size: str  # ör: 205/55 R16
+    size: Optional[str] = ""  # lastik: 205/55 R16
     season: TIRE_SEASONS = "4mevsim"
     dot: Optional[str] = ""  # DOT / üretim yılı
     quantity: float = 0
@@ -774,7 +799,38 @@ class TireMovementIn(BaseModel):
     date: Optional[str] = None
 
 
+def _validate_product(data: "TireIn") -> None:
+    if data.product_type == "diger":
+        if not (data.name or "").strip():
+            raise HTTPException(400, "Ürün adı zorunludur")
+    elif not (data.brand or "").strip() or not (data.size or "").strip():
+        raise HTTPException(400, "Lastik için marka ve ebat zorunludur")
+
+
+def _product_fields(data: "TireIn") -> dict:
+    return {
+        "product_type": data.product_type,
+        "name": (data.name or "").strip(),
+        "category": (data.category or "").strip(),
+        "unit": (data.unit or "adet").strip() or "adet",
+        "brand": (data.brand or "").strip(),
+        "model": (data.model or "").strip(),
+        "size": (data.size or "").strip(),
+        "season": data.season,
+        "dot": (data.dot or "").strip(),
+        "note": (data.note or "").strip(),
+        "quantity": float(data.quantity),
+        "buy_price": float(data.buy_price),
+        "sell_price": float(data.sell_price),
+        "kdv_rate": float(data.kdv_rate),
+    }
+
+
 def _tire_label(doc: dict) -> str:
+    if doc.get("product_type") == "diger":
+        parts = [doc.get("name", ""), doc.get("brand", ""), doc.get("model", "")]
+        label = " ".join(p for p in parts if p).strip()
+        return f"{label} ({doc['category']})" if doc.get("category") else label
     parts = [doc.get("brand", ""), doc.get("model", ""), doc.get("size", "")]
     season_map = {"yaz": "Yaz", "kis": "Kış", "4mevsim": "4 Mevsim"}
     s = season_map.get(doc.get("season"), "")
@@ -822,18 +878,10 @@ async def list_tires(
 
 @api_router.post("/tires", response_model=TireOut)
 async def create_tire(data: TireIn, user: dict = Depends(get_current_user)):
-    doc = data.model_dump()
+    _validate_product(data)
+    doc = _product_fields(data)
     doc.update({
         "id": str(uuid.uuid4()),
-        "brand": data.brand.strip(),
-        "model": (data.model or "").strip(),
-        "size": data.size.strip(),
-        "dot": (data.dot or "").strip(),
-        "note": (data.note or "").strip(),
-        "quantity": float(data.quantity),
-        "buy_price": float(data.buy_price),
-        "sell_price": float(data.sell_price),
-        "kdv_rate": float(data.kdv_rate),
         "created_by": user["id"],
         "created_by_name": user["name"],
         "created_at": now_iso(),
@@ -865,20 +913,9 @@ async def create_tire(data: TireIn, user: dict = Depends(get_current_user)):
 async def update_tire(tire_id: str, data: TireIn, user: dict = Depends(get_current_user)):
     before = await db.tires.find_one({"id": tire_id}, {"_id": 0})
     if not before:
-        raise HTTPException(404, "Lastik bulunamadı")
-    update = {
-        "brand": data.brand.strip(),
-        "model": (data.model or "").strip(),
-        "size": data.size.strip(),
-        "season": data.season,
-        "dot": (data.dot or "").strip(),
-        "note": (data.note or "").strip(),
-        "quantity": float(data.quantity),
-        "buy_price": float(data.buy_price),
-        "sell_price": float(data.sell_price),
-        "kdv_rate": float(data.kdv_rate),
-        "updated_at": now_iso(),
-    }
+        raise HTTPException(404, "Ürün bulunamadı")
+    _validate_product(data)
+    update = {**_product_fields(data), "updated_at": now_iso()}
     await db.tires.update_one({"id": tire_id}, {"$set": update})
     doc = await db.tires.find_one({"id": tire_id}, {"_id": 0})
     _tire_as_legacy(doc)
@@ -983,52 +1020,72 @@ async def get_sale(sale_id: str, user: dict = Depends(get_current_user)):
     return doc
 
 
-@api_router.post("/sales")
-async def create_sale(data: SaleIn, user: dict = Depends(get_current_user)):
+async def _validate_sale(data: SaleIn, credit: Optional[dict] = None) -> dict:
+    """Satış girdisini doğrular. credit: düzenlemede eski satışın iade edilecek adetleri {tire_id: qty}."""
+    credit = credit or {}
     if not data.items:
         raise HTTPException(400, "En az bir ürün eklemelisiniz")
     if data.payment_method == "veresiye" and not data.cari_id:
         raise HTTPException(400, "Veresiye satış için cari seçimi zorunludur")
-
-    # Validate tires + yeter stok
-    enriched = []
+    enriched, need = [], {}
     for it in data.items:
         if it.quantity <= 0 or it.unit_price < 0 or it.discount < 0:
             raise HTTPException(400, "Geçersiz miktar, fiyat veya indirim")
         tire = await db.tires.find_one({"id": it.tire_id}, {"_id": 0})
         if not tire:
-            raise HTTPException(404, f"Lastik bulunamadı: {it.tire_id}")
-        if float(tire.get("quantity", 0)) < float(it.quantity):
-            raise HTTPException(400, f"{_tire_label(tire)} için yeterli stok yok (mevcut: {tire.get('quantity', 0)})")
+            raise HTTPException(404, f"Ürün bulunamadı: {it.tire_id}")
+        need[it.tire_id] = need.get(it.tire_id, 0.0) + float(it.quantity)
+        available = float(tire.get("quantity", 0)) + float(credit.get(it.tire_id, 0))
+        if available < need[it.tire_id]:
+            raise HTTPException(400, f"{_tire_label(tire)} için yeterli stok yok (mevcut: {available:g})")
         line_gross = round(float(it.quantity) * float(it.unit_price), 2)
-        line_total = round(max(0.0, line_gross - float(it.discount)), 2)
         enriched.append({
-            "tire_id": it.tire_id,
-            "tire_label": _tire_label(tire),
-            "quantity": float(it.quantity),
-            "unit_price": float(it.unit_price),
-            "discount": float(it.discount),
-            "line_total": line_total,
+            "tire_id": it.tire_id, "tire_label": _tire_label(tire), "quantity": float(it.quantity),
+            "unit_price": float(it.unit_price), "discount": float(it.discount),
+            "line_total": round(max(0.0, line_gross - float(it.discount)), 2),
         })
-
     cari = None
     if data.cari_id:
         cari = await db.cariler.find_one({"id": data.cari_id}, {"_id": 0, "name": 1, "id": 1})
         if not cari:
             raise HTTPException(404, "Cari bulunamadı")
-
     subtotal = round(sum(e["line_total"] for e in enriched), 2)
-    overall_disc = round(min(float(data.overall_discount or 0), subtotal), 2)
-    total = round(subtotal - overall_disc, 2)
-    sale_id = str(uuid.uuid4())
-    sale_date = data.date or now_iso()[:10]
+    overall = round(min(float(data.overall_discount or 0), subtotal), 2)
+    return {"enriched": enriched, "cari": cari, "subtotal": subtotal, "overall": overall, "total": round(subtotal - overall, 2)}
 
-    # Atomic-ish execution: track side-effects, revert on failure
+
+async def _revert_sale_effects(sale: dict, user: dict, note: str) -> None:
+    """Satışın stok düşüşünü 'iade' hareketiyle geri alır; gelir ve cari alacak kaydını siler."""
+    for mv_id in sale.get("movement_ids", []):
+        mv = await db.stock_movements.find_one({"id": mv_id}, {"_id": 0})
+        if not mv:
+            continue
+        tire = await db.tires.find_one({"id": mv["tire_id"]}, {"_id": 0, "quantity": 1})
+        if not tire:
+            continue
+        before = float(tire.get("quantity", 0))
+        after = before - float(mv["delta"])
+        await db.tires.update_one({"id": mv["tire_id"]}, {"$set": {"quantity": after, "updated_at": now_iso()}})
+        await db.stock_movements.insert_one({
+            "id": str(uuid.uuid4()), "tire_id": mv["tire_id"], "tire_label": mv.get("tire_label", ""),
+            "delta": -float(mv["delta"]), "before": before, "after": after,
+            "reason": "iade", "note": note, "date": now_iso()[:10],
+            "created_by": user["id"], "created_by_name": user["name"], "created_at": now_iso(),
+        })
+    if sale.get("income_id"):
+        await db.incomes.delete_one({"id": sale["income_id"]})
+    if sale.get("cari_tx_id"):
+        await db.cari_transactions.delete_one({"id": sale["cari_tx_id"]})
+
+
+async def _apply_sale(data: SaleIn, v: dict, user: dict, sale_id: str, meta: Optional[dict] = None) -> dict:
+    """Doğrulanmış satışı uygular: stok düşer, peşinse gelir / veresiyede cari alacak yazar, satış kaydını kaydeder."""
+    enriched, cari, total = v["enriched"], v["cari"], v["total"]
+    sale_date = data.date or now_iso()[:10]
     done_movement_ids: list = []
     income_id: Optional[str] = None
     cari_tx_id: Optional[str] = None
     try:
-        # 1) stoktan düş (her ürün için hareket)
         for e in enriched:
             tire = await db.tires.find_one({"id": e["tire_id"]}, {"_id": 0})
             before = float(tire.get("quantity", 0))
@@ -1046,14 +1103,11 @@ async def create_sale(data: SaleIn, user: dict = Depends(get_current_user)):
             })
             done_movement_ids.append(mv_id)
 
-        # 2) ödeme yöntemine göre gelir / cari alacak
         parts = [f"{e['quantity']:.0f}× {e['tire_label']}" for e in enriched]
-        desc = "Lastik satışı — " + ", ".join(parts[:3]) + (f" (+{len(parts)-3} ürün)" if len(parts) > 3 else "")
+        desc = "Satış — " + ", ".join(parts[:3]) + (f" (+{len(parts)-3} ürün)" if len(parts) > 3 else "")
         if cari:
             desc = f"{cari['name']} — {desc}"
-
         if data.payment_method == "veresiye":
-            # cari'ye alacak ekle; gelir OLUŞTURMA (henüz tahsilat yok)
             cari_tx_id = str(uuid.uuid4())
             await db.cari_transactions.insert_one({
                 "id": cari_tx_id, "cari_id": cari["id"], "type": "alacak",
@@ -1062,24 +1116,22 @@ async def create_sale(data: SaleIn, user: dict = Depends(get_current_user)):
                 "created_at": now_iso(), "sale_id": sale_id,
             })
         else:
-            # peşin: gelir kaydı
             income_id = str(uuid.uuid4())
-            cari_name_val = cari["name"] if cari else None
             await db.incomes.insert_one({
                 "id": income_id, "description": desc, "amount": total,
-                "date": sale_date, "cari_id": cari["id"] if cari else None, "cari_name": cari_name_val,
+                "date": sale_date, "cari_id": cari["id"] if cari else None, "cari_name": cari["name"] if cari else None,
                 "created_by": user["id"], "created_by_name": user["name"],
                 "created_at": now_iso(), "sale_id": sale_id,
             })
 
-        # 3) satış kaydı
+        meta = meta or {"created_by": user["id"], "created_by_name": user["name"], "created_at": now_iso()}
         sale_doc = {
             "id": sale_id,
             "cari_id": cari["id"] if cari else None,
             "cari_name": cari["name"] if cari else None,
             "items": enriched,
-            "subtotal": subtotal,
-            "overall_discount": overall_disc,
+            "subtotal": v["subtotal"],
+            "overall_discount": v["overall"],
             "total": total,
             "payment_method": data.payment_method,
             "note": (data.note or "").strip(),
@@ -1087,21 +1139,12 @@ async def create_sale(data: SaleIn, user: dict = Depends(get_current_user)):
             "income_id": income_id,
             "cari_tx_id": cari_tx_id,
             "movement_ids": done_movement_ids,
-            "created_by": user["id"],
-            "created_by_name": user["name"],
-            "created_at": now_iso(),
-            "reversed": False,
+            **meta,
         }
-        await db.sales.insert_one(sale_doc)
+        await db.sales.replace_one({"id": sale_id}, sale_doc, upsert=True)
         sale_doc.pop("_id", None)
-        await log_activity(
-            user, "create", "Satış",
-            f"{desc} — {total}₺ ({data.payment_method})",
-        )
         return sale_doc
-
     except HTTPException:
-        # Yan etkileri geri al
         for mv_id in done_movement_ids:
             mv = await db.stock_movements.find_one({"id": mv_id}, {"_id": 0})
             if mv:
@@ -1114,36 +1157,44 @@ async def create_sale(data: SaleIn, user: dict = Depends(get_current_user)):
         raise
 
 
+@api_router.post("/sales")
+async def create_sale(data: SaleIn, user: dict = Depends(get_current_user)):
+    v = await _validate_sale(data)
+    sale = await _apply_sale(data, v, user, str(uuid.uuid4()))
+    await log_activity(user, "create", "Satış", f"{sale['cari_name'] or 'Müşterisiz'} — {sale['total']}₺ ({data.payment_method})")
+    return sale
+
+
+@api_router.put("/sales/{sale_id}")
+async def update_sale(sale_id: str, data: SaleIn, user: dict = Depends(get_current_user)):
+    old = await db.sales.find_one({"id": sale_id}, {"_id": 0})
+    if not old:
+        raise HTTPException(404, "Satış bulunamadı")
+    credit: dict = {}
+    for it in old.get("items", []):
+        credit[it["tire_id"]] = credit.get(it["tire_id"], 0.0) + float(it["quantity"])
+    v = await _validate_sale(data, credit)
+    await _revert_sale_effects(old, user, f"Satış düzenlendi: {sale_id}")
+    meta = {"created_by": old["created_by"], "created_by_name": old["created_by_name"], "created_at": old["created_at"],
+            "updated_at": now_iso(), "updated_by_name": user["name"]}
+    try:
+        sale = await _apply_sale(data, v, user, sale_id, meta)
+    except HTTPException:
+        await db.sales.delete_one({"id": sale_id})
+        raise HTTPException(400, "Satış güncellenemedi; eski satış geri alındı, stok iade edildi. Lütfen satışı yeniden girin.")
+    await log_activity(user, "update", "Satış", f"Düzenlendi: {old.get('total', 0)}₺ → {sale['total']}₺")
+    return sale
+
+
 @api_router.delete("/sales/{sale_id}")
 async def delete_sale(sale_id: str, user: dict = Depends(get_current_user)):
     sale = await db.sales.find_one({"id": sale_id}, {"_id": 0})
     if not sale:
         raise HTTPException(404, "Satış bulunamadı")
-    if sale.get("reversed"):
-        raise HTTPException(400, "Satış zaten iptal edilmiş")
-
-    # 1) stok hareketlerini geri al
-    for mv_id in sale.get("movement_ids", []):
-        mv = await db.stock_movements.find_one({"id": mv_id}, {"_id": 0})
-        if mv:
-            await db.tires.update_one({"id": mv["tire_id"]}, {"$inc": {"quantity": -float(mv["delta"])}, "$set": {"updated_at": now_iso()}})
-            # Ters hareket logu
-            await db.stock_movements.insert_one({
-                "id": str(uuid.uuid4()), "tire_id": mv["tire_id"], "tire_label": mv.get("tire_label", ""),
-                "delta": -float(mv["delta"]), "before": mv["after"], "after": mv["before"],
-                "reason": "iade", "note": f"Satış iptali: {sale_id}", "date": now_iso()[:10],
-                "created_by": user["id"], "created_by_name": user["name"], "created_at": now_iso(),
-                "sale_id": sale_id,
-            })
-    # 2) gelir sil
-    if sale.get("income_id"):
-        await db.incomes.delete_one({"id": sale["income_id"]})
-    # 3) cari alacak sil
-    if sale.get("cari_tx_id"):
-        await db.cari_transactions.delete_one({"id": sale["cari_tx_id"]})
-
-    await db.sales.update_one({"id": sale_id}, {"$set": {"reversed": True, "reversed_at": now_iso(), "reversed_by": user["name"]}})
-    await log_activity(user, "delete", "Satış", f"İptal edildi: {sale.get('total', 0)}₺")
+    if not sale.get("reversed"):
+        await _revert_sale_effects(sale, user, f"Satış silindi: {sale_id}")
+    await db.sales.delete_one({"id": sale_id})
+    await log_activity(user, "delete", "Satış", f"Silindi: {sale.get('cari_name') or 'Müşterisiz'} — {sale.get('total', 0)}₺")
     return {"ok": True}
 
 
@@ -1903,7 +1954,8 @@ async def _stock_snapshot() -> dict:
     for t in tires:
         q = float(t.get("quantity", 0))
         row = {"id": t["id"], "brand": t.get("brand", ""), "model": t.get("model", ""), "size": t.get("size", ""),
-               "season": t.get("season", ""), "quantity": q}
+               "season": t.get("season", ""), "quantity": q, "product_type": t.get("product_type", "lastik"),
+               "name": t.get("name", ""), "category": t.get("category", ""), "unit": t.get("unit", "adet"), "label": _tire_label(t)}
         if q <= 0:
             out.append(row)
         elif q <= threshold:
@@ -1922,20 +1974,23 @@ async def _stock_snapshot() -> dict:
 
 async def _receivables_snapshot() -> dict:
     """Müşterilerin açık alacak bakiyesi = alacak − gelen ödeme (sadece > 0 olanlar)."""
-    txs = await db.cari_transactions.find({}, {"_id": 0, "cari_id": 1, "type": 1, "amount": 1}).to_list(50000)
+    txs = await db.cari_transactions.find({}, {"_id": 0, "cari_id": 1, "type": 1, "amount": 1, "date": 1, "created_at": 1}).to_list(50000)
     cariler = {c["id"]: c["name"] for c in await db.cariler.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(10000)}
     agg: dict = {}
     for t in txs:
         if t.get("cari_id") not in cariler:
             continue
-        a = agg.setdefault(t["cari_id"], {"alacak": 0.0, "odeme": 0.0})
+        a = agg.setdefault(t["cari_id"], {"alacak": 0.0, "odeme": 0.0, "txs": []})
         if t["type"] in ("alacak", "odeme"):
             a[t["type"]] += float(t.get("amount", 0))
+            a["txs"].append(t)
     rows = []
     for cid, a in agg.items():
         rem = round(a["alacak"] - a["odeme"], 2)
         if rem > 0.005:
-            rows.append({"id": cid, "name": cariler[cid], "total_alacak": _r2(a["alacak"]), "total_odeme": _r2(a["odeme"]), "remaining": rem})
+            oldest, days = _oldest_open_debt(a["txs"], a["odeme"])
+            rows.append({"id": cid, "name": cariler[cid], "total_alacak": _r2(a["alacak"]), "total_odeme": _r2(a["odeme"]),
+                         "remaining": rem, "oldest_open_date": oldest, "open_days": days})
     rows.sort(key=lambda r: r["remaining"], reverse=True)
     return {"total": _r2(sum(r["remaining"] for r in rows)), "debtor_count": len(rows), "items": rows}
 

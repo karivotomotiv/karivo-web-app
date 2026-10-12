@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatTRY } from "@/lib/api";
+import { formatTRY, formatDate } from "@/lib/api";
 import { Users, ChevronRight } from "lucide-react";
 
 export const ReceivablesSummary = ({ r }) => {
@@ -37,6 +37,14 @@ export const ReceivablesSummary = ({ r }) => {
                 <div className="mt-1.5 h-1 rounded-full bg-slate-100 overflow-hidden">
                   <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${Math.max(4, (c.remaining / max) * 100)}%` }} />
                 </div>
+                {c.oldest_open_date && (
+                  <div className="mt-1 flex items-center justify-between text-[11px] text-slate-500" data-testid={`receivable-age-${c.id}`}>
+                    <span>En eski borç: {formatDate(c.oldest_open_date)}</span>
+                    <span className={`font-semibold ${c.open_days > 60 ? "text-rose-700" : c.open_days > 30 ? "text-amber-700" : "text-slate-600"}`}>
+                      {c.open_days === 0 ? "bugün" : `${c.open_days} gündür ödenmedi`}
+                    </span>
+                  </div>
+                )}
               </Link>
             ))}
           </div>
