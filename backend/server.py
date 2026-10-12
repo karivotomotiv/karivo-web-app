@@ -2107,6 +2107,7 @@ Rol: Lastik stoku, satışlar, cariler (alacak/borç/gelen ödeme), gelir, gider
 YETKİ: Kullanıcı bir şey yapmanı isterse (ekle, gir, kaydet, güncelle, tamamla) HEMEN ilgili aracı çağır ve yap — onay sorma, "yapabilir miyim" deme. Eksik zorunlu bilgi varsa (ör. tutar) sadece onu kısaca sor.
 ONAY SADECE İKİ DURUMDA: (1) Satış oluşturma (create_sale), (2) Herhangi bir kaydı silme (delete_record). Bunlarda önce tek cümleyle özetle ve "onaylıyor musun?" diye sor; kullanıcı evet/tamam/olur derse confirmed=true ile çağır.
 Kimlik çözme: Cari adı söylenirse cari_name ile gönder. Lastik için önce search_tires ile id bul. Silme/tamamlama için önce list_records ile id bul.
+Lastik dışı ürün (akü, jant, yağ, silecek vb.) stoğa eklenecekse add_other_product kullan (add_tire DEĞİL). Fiyat söylenmediyse sorma; ekledikten sonra "fiyatları sonra Stok sayfasından girebilirsin" de. Mevcut ürüne eklendiyse yeni adedi söyle.
 "Harcama" denirse add_spending kullan (kategori belirtilmezse company). "Gider" denirse add_expense kullan.
 "X'ten ödeme geldi / tahsil ettim" → add_cari_transaction(type=odeme). "X'e borçlandık / X'ten mal aldık veresiye" → type=borc. "X bize borçlandı / X'e alacak yaz" → type=alacak.
 Dil: Türkçe, ÇOK kısa ve net (1-3 cümle). Sayıları ₺ ile yaz. Markdown başlık/tablo kullanma; gerekirse kısa liste.
@@ -2119,7 +2120,7 @@ SAMPIYON_TOOLS = [
         "type": "function",
         "function": {
             "name": "search_tires",
-            "description": "Lastik stokundan ebat, marka, mevsim veya serbest metin ile ara. Örn: '205/55 R16' lastikleri bulmak için size='205/55 R16'.",
+            "description": "Stokta (lastik ve diğer ürünler: akü, jant, yağ...) ebat, marka, mevsim veya serbest metin (search) ile ara. Örn: '205/55 R16' için size='205/55 R16', akü için search='akü'.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2285,8 +2286,9 @@ async def _tool_search_tires(args: dict, user: dict) -> dict:
         s = args["search"].lower()
         docs = [d for d in docs if s in _tire_label(d).lower()]
     out = [{
-        "id": d["id"], "brand": d["brand"], "model": d.get("model", ""), "size": d["size"],
-        "season": d.get("season"), "dot": d.get("dot", ""), "quantity": d.get("quantity", 0),
+        "id": d["id"], "label": _tire_label(d), "product_type": d.get("product_type", "lastik"),
+        "brand": d.get("brand", ""), "model": d.get("model", ""), "size": d.get("size", ""),
+        "season": d.get("season"), "dot": d.get("dot", ""), "quantity": d.get("quantity", 0), "unit": d.get("unit", "adet"),
         "buy_price": d.get("buy_price", 0), "sell_price": d.get("sell_price", 0),
     } for d in docs]
     return {"count": len(out), "items": out[:50]}
@@ -2401,6 +2403,27 @@ def _need_confirm(args: dict, summary: str) -> Optional[dict]:
     if args.get("confirmed"):
         return None
     return {"error": "Onay gerekli", "hint": f"Kullanıcıya şunu sor ve onaylarsa confirmed=true ile tekrar çağır: {summary}"}
+
+
+async def _tool_add_other_product(args: dict, user: dict) -> dict:
+    name = (args.get("name") or "").strip()
+    if not name:
+        return {"error": "Ürün adı gerekli"}
+    qty = float(args.get("quantity") or 0)
+    existing = await db.tires.find_one({"product_type": "diger", "name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}, {"_id": 0})
+    if existing:
+        if qty <= 0:
+            return {"ok": True, "action": "exists", "label": _tire_label(existing), "quantity": existing.get("quantity", 0)}
+        mv = await tire_movement(existing["id"], TireMovementIn(delta=qty, reason="alis", note="Şampiyon ile stok girişi"), user=user)  # type: ignore
+        return {"ok": True, "action": "stock_added", "label": _tire_label(existing), "added": qty, "new_quantity": mv["after"],
+                "unit": existing.get("unit", "adet")}
+    data = TireIn(product_type="diger", name=name, category=args.get("category") or "", unit=args.get("unit") or "adet",
+                  brand=args.get("brand") or "", model=args.get("model") or "", quantity=qty,
+                  buy_price=float(args.get("buy_price") or 0), sell_price=float(args.get("sell_price") or 0),
+                  kdv_rate=float(args.get("kdv_rate") or 20), note=args.get("note") or "")
+    doc = await create_tire(data, user=user)  # type: ignore
+    return {"ok": True, "action": "created", "id": doc["id"], "label": doc["product_name"], "quantity": doc["quantity"],
+            "unit": doc["unit"], "price_missing": not (data.buy_price or data.sell_price)}
 
 
 async def _tool_add_spending(args: dict, user: dict) -> dict:
@@ -2524,6 +2547,16 @@ async def _tool_delete_record(args: dict, user: dict) -> dict:
 _RECORD_TYPES = list(RECORD_COLLECTIONS.keys())
 SAMPIYON_TOOLS += [
     {"type": "function", "function": {
+        "name": "add_other_product",
+        "description": "Lastik DIŞINDAKİ ürünleri (akü, jant, yağ, silecek, aksesuar...) stoğa ekler. Aynı isimde 'Diğer' ürün varsa stoğuna giriş yapar, yoksa yeni ürün oluşturur. Direkt yap, fiyat sorma (söylenmezse 0). name kısa ve standart olsun (ör: 'Akü 72Ah'), category tek kelime (ör: 'Akü', 'Jant', 'Yağ').",
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string"}, "category": {"type": "string"},
+            "unit": {"type": "string", "enum": ["adet", "takım", "litre", "kutu", "paket", "metre"]},
+            "quantity": {"type": "number"}, "brand": {"type": "string"}, "model": {"type": "string"},
+            "buy_price": {"type": "number", "description": "KDV hariç alış"}, "sell_price": {"type": "number", "description": "KDV dahil satış"},
+            "kdv_rate": {"type": "number"}, "note": {"type": "string"}},
+            "required": ["name", "quantity"]}}},
+    {"type": "function", "function": {
         "name": "add_spending",
         "description": "Harcamalar sayfasına harcama ekler. category: company=Şirket, user1=1. kullanıcı, user2=2. kullanıcı (isimler sistem mesajında). Direkt yap.",
         "parameters": {"type": "object", "properties": {
@@ -2595,6 +2628,7 @@ SAMPIYON_TOOL_HANDLERS = {
     "add_income": _tool_add_income,
     "add_expense": _tool_add_expense,
     "list_recent_sales": _tool_list_recent_sales,
+    "add_other_product": _tool_add_other_product,
     "add_spending": _tool_add_spending,
     "add_todo": _tool_add_todo,
     "complete_todo": _tool_complete_todo,
@@ -2606,7 +2640,7 @@ SAMPIYON_TOOL_HANDLERS = {
     "list_records": _tool_list_records,
     "delete_record": _tool_delete_record,
 }
-SAMPIYON_WRITE_TOOLS = {"add_tire", "update_tire_stock", "add_income", "add_expense", "add_spending", "add_todo",
+SAMPIYON_WRITE_TOOLS = {"add_other_product", "add_tire", "update_tire_stock", "add_income", "add_expense", "add_spending", "add_todo",
                         "complete_todo", "add_cari", "add_cari_transaction", "add_invoice", "update_tire",
                         "create_sale", "delete_record"}
 

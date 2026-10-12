@@ -8,7 +8,7 @@ import { toast } from "sonner";
 
 const TOOL_LABELS = {
   search_tires: "Lastiklere bakıyorum", get_stock_summary: "Stok özetini çıkarıyorum", get_finance_summary: "Finansa bakıyorum",
-  list_cariler: "Carilere bakıyorum", add_tire: "Lastik ekliyorum", update_tire_stock: "Stoğu güncelliyorum",
+  list_cariler: "Carilere bakıyorum", add_tire: "Lastik ekliyorum", add_other_product: "Ürünü stoğa ekliyorum", update_tire_stock: "Stoğu güncelliyorum",
   add_income: "Gelir yazıyorum", add_expense: "Gider yazıyorum", list_recent_sales: "Satışlara bakıyorum",
   add_spending: "Harcama giriyorum", add_todo: "Görev ekliyorum", complete_todo: "Görevi güncelliyorum",
   add_cari: "Cari ekliyorum", add_cari_transaction: "Cari hareketi yazıyorum", add_invoice: "Fatura ekliyorum",

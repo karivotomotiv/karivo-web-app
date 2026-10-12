@@ -32,12 +32,15 @@ const MOVEMENT_REASONS = [
 const emptyTire = { product_type: "lastik", name: "", category: "", unit: "adet", brand: "", model: "", size: "", season: "4mevsim", dot: "", quantity: 0, buy_price: 0, sell_price: 0, kdv_rate: 20, note: "" };
 const UNITS = ["adet", "takım", "litre", "kutu", "paket", "metre"];
 const isOther = (t) => t.product_type === "diger";
+const NO_CAT = "Kategorisiz";
+const catOf = (t) => (t.category || "").trim() || NO_CAT;
 
 export default function Stok() {
   const [items, setItems] = useState([]);
   const [search, setSearch] = useState("");
   const [seasonFilter, setSeasonFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
+  const [catFilter, setCatFilter] = useState("all");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyTire);
@@ -76,12 +79,25 @@ export default function Stok() {
     return items.filter((t) => {
       const type = isOther(t) ? "diger" : "lastik";
       if (typeFilter !== "all" && type !== typeFilter) return false;
+      if (typeFilter === "diger" && catFilter !== "all" && catOf(t) !== catFilter) return false;
       if (seasonFilter !== "all" && (isOther(t) || t.season !== seasonFilter)) return false;
       if (!s) return true;
       const hay = `${t.name || ""} ${t.category || ""} ${t.brand} ${t.model} ${t.size} ${t.dot} ${t.note}`.toLowerCase();
       return hay.includes(s);
     });
-  }, [items, search, seasonFilter, typeFilter]);
+  }, [items, search, seasonFilter, typeFilter, catFilter]);
+
+  const categoryStats = useMemo(() => {
+    const map = new Map();
+    for (const t of items.filter(isOther)) {
+      const k = catOf(t);
+      const r = map.get(k) || { name: k, count: 0, qty: 0, buyVal: 0, sellVal: 0 };
+      const q = Number(t.quantity || 0);
+      r.count += 1; r.qty += q; r.buyVal += q * Number(t.buy_price || 0); r.sellVal += q * Number(t.sell_price || 0);
+      map.set(k, r);
+    }
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, "tr"));
+  }, [items]);
 
   const openNew = (product_type = "lastik") => { setEditing(null); setForm({ ...emptyTire, product_type }); setOpen(true); };
   const openEdit = (it) => {
@@ -241,10 +257,10 @@ export default function Stok() {
           </div>
           <div className="inline-flex rounded-lg bg-slate-100 p-1" data-testid="stock-type-filter">
             {[["all", "Tümü"], ["lastik", "Lastik"], ["diger", "Diğer"]].map(([v, l]) => (
-              <button key={v} onClick={() => setTypeFilter(v)} className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors ${typeFilter === v ? "bg-white shadow-sm text-slate-900" : "text-slate-500 hover:text-slate-900"}`} data-testid={`stock-type-${v}`}>{l}</button>
+              <button key={v} onClick={() => { setTypeFilter(v); setCatFilter("all"); if (v === "diger") setSeasonFilter("all"); }} className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors ${typeFilter === v ? "bg-white shadow-sm text-slate-900" : "text-slate-500 hover:text-slate-900"}`} data-testid={`stock-type-${v}`}>{l}</button>
             ))}
           </div>
-          <Select value={seasonFilter} onValueChange={setSeasonFilter}>
+          {typeFilter !== "diger" && <Select value={seasonFilter} onValueChange={setSeasonFilter}>
             <SelectTrigger className="w-44" data-testid="tire-season-filter"><SelectValue placeholder="Mevsim" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Tüm Mevsimler</SelectItem>
@@ -252,8 +268,42 @@ export default function Stok() {
               <SelectItem value="kis">Kış</SelectItem>
               <SelectItem value="4mevsim">4 Mevsim</SelectItem>
             </SelectContent>
-          </Select>
+          </Select>}
         </CardContent>
+        {typeFilter === "diger" && (
+          <CardContent className="p-4 border-b border-slate-100 space-y-3" data-testid="category-panel">
+            {categoryStats.length === 0 ? (
+              <div className="text-sm text-slate-500" data-testid="category-empty">Henüz "Diğer" ürün yok.</div>
+            ) : (
+              <>
+                <div className="flex flex-wrap gap-2" data-testid="category-chips">
+                  {[{ name: "all", label: "Tümü" }, ...categoryStats.map((c) => ({ name: c.name, label: `${c.name} (${c.count})` }))].map((c) => (
+                    <button key={c.name} onClick={() => setCatFilter(c.name)}
+                      className={`px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${catFilter === c.name ? "bg-violet-600 text-white border-violet-600" : "bg-white text-slate-600 border-slate-200 hover:border-violet-300 hover:text-violet-700"}`}
+                      data-testid={`category-chip-${c.name}`}>{c.label}</button>
+                  ))}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {categoryStats.map((c) => (
+                    <button key={c.name} onClick={() => setCatFilter(c.name)}
+                      className={`text-left rounded-xl border p-3 transition-colors ${catFilter === c.name ? "border-violet-400 bg-violet-50" : "border-slate-200 hover:border-violet-300"}`}
+                      data-testid={`category-card-${c.name}`}>
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-bold text-slate-900">{c.name}</span>
+                        <span className="text-[11px] text-slate-500">{c.count} çeşit</span>
+                      </div>
+                      <div className="mt-1 text-lg font-extrabold text-slate-900" data-testid={`category-qty-${c.name}`}>{c.qty} <span className="text-xs font-medium text-slate-500">toplam adet</span></div>
+                      <div className="mt-1 flex justify-between text-[11px]">
+                        <span className="text-rose-700">Alış {formatTRY(c.buyVal)}</span>
+                        <span className="text-emerald-700">Satış {formatTRY(c.sellVal)}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </CardContent>
+        )}
         <CardContent className="p-0">
           <Table>
             <TableHeader>
