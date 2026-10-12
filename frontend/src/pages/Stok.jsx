@@ -40,6 +40,7 @@ export default function Stok() {
   const [search, setSearch] = useState("");
   const [seasonFilter, setSeasonFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
+  const [dup, setDup] = useState(null);
   const [catFilter, setCatFilter] = useState("all");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -130,12 +131,32 @@ export default function Stok() {
         await api.put(`/tires/${editing.id}`, payload);
         toast.success("Ürün güncellendi");
       } else {
+        if (other) {
+          const { data: m } = await api.get("/tires/similar", { params: { name: payload.name, brand: payload.brand, model: payload.model } });
+          const matches = [...(m.exact ? [{ ...m.exact, exact: true }] : []), ...m.similar];
+          if (matches.length) { setDup({ matches, payload }); return; }
+        }
         await api.post("/tires", payload);
         toast.success(other ? "Ürün eklendi" : "Lastik eklendi");
       }
       setOpen(false); load();
     } catch (e) { toast.error(extractError(e)); }
     finally { setLoading(false); }
+  };
+
+  const dupCreateNew = async () => {
+    try { await api.post("/tires", dup.payload); toast.success("Yeni ürün eklendi"); setDup(null); setOpen(false); load(); }
+    catch (e) { toast.error(extractError(e)); }
+  };
+  const dupStockIn = async (match) => {
+    const qty = Number(dup.payload.quantity);
+    try {
+      if (qty > 0) {
+        await api.post(`/tires/${match.id}/movement`, { delta: qty, reason: "alis", note: "Benzer ürün eşleştirmesiyle stok girişi" });
+        toast.success(`${match.label}: +${qty} ${match.unit || "adet"} stok girişi yapıldı`);
+      } else toast.info("Adet 0 olduğu için stok değişmedi");
+      setDup(null); setOpen(false); load();
+    } catch (e) { toast.error(extractError(e)); }
   };
 
   const remove = async (it) => {
@@ -436,6 +457,37 @@ export default function Stok() {
               <Button type="submit" disabled={loading} className="bg-slate-900 hover:bg-slate-800" data-testid="tire-form-save">{loading ? "Kaydediliyor..." : "Kaydet"}</Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Similar product dialog */}
+      <Dialog open={!!dup} onOpenChange={(o) => !o && setDup(null)}>
+        <DialogContent className="sm:max-w-lg" data-testid="similar-dialog">
+          <DialogHeader>
+            <DialogTitle>Benzer ürün var</DialogTitle>
+            <DialogDescription>
+              "{dup?.payload.name}" stokta zaten var gibi görünüyor. Mevcut ürüne stok girişi yapabilir veya yine de yeni ürün oluşturabilirsiniz.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            {dup?.matches.map((m) => (
+              <div key={m.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-3 py-2" data-testid={`similar-item-${m.id}`}>
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-slate-900 truncate">{m.label}</div>
+                  <div className="text-xs text-slate-500">
+                    {m.exact ? <span className="text-emerald-700 font-semibold">Aynı ürün · </span> : "Benzer · "}Mevcut: {m.quantity} {m.unit || "adet"}
+                  </div>
+                </div>
+                <Button size="sm" onClick={() => dupStockIn(m)} className="bg-emerald-600 hover:bg-emerald-700 text-white shrink-0" data-testid={`similar-stockin-${m.id}`}>
+                  <ArrowDown className="w-4 h-4 mr-1" /> Stok girişi (+{Number(dup.payload.quantity) || 0})
+                </Button>
+              </div>
+            ))}
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setDup(null)} data-testid="similar-cancel">Vazgeç</Button>
+            <Button variant="outline" onClick={dupCreateNew} data-testid="similar-create-new">Yine de yeni ürün oluştur</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

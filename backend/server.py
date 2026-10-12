@@ -852,6 +852,48 @@ def _tire_as_legacy(doc: dict) -> dict:
     return doc
 
 
+_TR_MAP = str.maketrans("İIıŞşĞğÜüÖöÇç", "iiissgguuoocc")
+_UNIT_PATTERNS = [
+    (re.compile(r"(\d+(?:[.,]\d+)?)\s*(amper|amp|ah|a)\b"), r"\1ah"),
+    (re.compile(r"(\d+(?:[.,]\d+)?)\s*(litre|lt|l)\b"), r"\1lt"),
+    (re.compile(r"(\d+(?:[.,]\d+)?)\s*(inch|inc|in|jant)\b"), r"\1inc"),
+    (re.compile(r"(\d+(?:[.,]\d+)?)\s*(mm)\b"), r"\1mm"),
+]
+
+
+def _norm_tokens(*parts: str) -> frozenset:
+    text = " ".join(p or "" for p in parts).translate(_TR_MAP).lower().replace(",", ".")
+    for rx, rpl in _UNIT_PATTERNS:
+        text = rx.sub(rpl, text)
+    return frozenset(t for t in re.split(r"[^a-z0-9.]+", text) if t and t != ".")
+
+
+async def _find_similar_products(name: str, brand: str = "", model: str = "", exclude_id: Optional[str] = None) -> dict:
+    """Diğer ürünlerde normalize edilmiş isim eşleşmesi: exact = aynı kelime kümesi, similar = alt küme veya Jaccard ≥ 0.6."""
+    want = _norm_tokens(name, brand, model)
+    if not want:
+        return {"exact": None, "similar": []}
+    exact, similar = None, []
+    for d in await db.tires.find({"product_type": "diger"}, {"_id": 0}).to_list(5000):
+        if d["id"] == exclude_id:
+            continue
+        have = _norm_tokens(d.get("name", ""), d.get("brand", ""), d.get("model", ""))
+        if not have:
+            continue
+        row = {"id": d["id"], "label": _tire_label(d), "quantity": d.get("quantity", 0), "unit": d.get("unit", "adet")}
+        if have == want and exact is None:
+            exact = row
+        elif want <= have or have <= want or len(want & have) / len(want | have) >= 0.6:
+            similar.append(row)
+    return {"exact": exact, "similar": similar[:5]}
+
+
+@api_router.get("/tires/similar")
+async def similar_products(name: str, brand: str = "", model: str = "", exclude_id: Optional[str] = None,
+                           user: dict = Depends(get_current_user)):
+    return await _find_similar_products(name, brand, model, exclude_id)
+
+
 @api_router.get("/tires", response_model=List[TireOut])
 async def list_tires(
     user: dict = Depends(get_current_user),
@@ -2410,13 +2452,25 @@ async def _tool_add_other_product(args: dict, user: dict) -> dict:
     if not name:
         return {"error": "Ürün adı gerekli"}
     qty = float(args.get("quantity") or 0)
-    existing = await db.tires.find_one({"product_type": "diger", "name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}, {"_id": 0})
-    if existing:
+
+    async def _stock_in(doc_id: str) -> dict:
+        doc = await db.tires.find_one({"id": doc_id}, {"_id": 0})
+        if not doc:
+            return {"error": "Hedef ürün bulunamadı"}
         if qty <= 0:
-            return {"ok": True, "action": "exists", "label": _tire_label(existing), "quantity": existing.get("quantity", 0)}
-        mv = await tire_movement(existing["id"], TireMovementIn(delta=qty, reason="alis", note="Şampiyon ile stok girişi"), user=user)  # type: ignore
-        return {"ok": True, "action": "stock_added", "label": _tire_label(existing), "added": qty, "new_quantity": mv["after"],
-                "unit": existing.get("unit", "adet")}
+            return {"ok": True, "action": "exists", "label": _tire_label(doc), "quantity": doc.get("quantity", 0)}
+        mv = await tire_movement(doc_id, TireMovementIn(delta=qty, reason="alis", note="Şampiyon ile stok girişi"), user=user)  # type: ignore
+        return {"ok": True, "action": "stock_added", "label": _tire_label(doc), "added": qty, "new_quantity": mv["after"], "unit": doc.get("unit", "adet")}
+
+    if args.get("target_id"):
+        return await _stock_in(args["target_id"])
+    if not args.get("force_new"):
+        m = await _find_similar_products(name, args.get("brand") or "", args.get("model") or "")
+        if m["exact"]:
+            return await _stock_in(m["exact"]["id"])
+        if m["similar"]:
+            return {"needs_choice": True, "similar": m["similar"],
+                    "hint": "Kullanıcıya kısaca sor: 'Stokta X var, ona mı ekleyeyim, yeni ürün mü açayım?'. Mevcut ürün seçilirse target_id ile, yeni ürün istenirse force_new=true ile tekrar çağır."}
     data = TireIn(product_type="diger", name=name, category=args.get("category") or "", unit=args.get("unit") or "adet",
                   brand=args.get("brand") or "", model=args.get("model") or "", quantity=qty,
                   buy_price=float(args.get("buy_price") or 0), sell_price=float(args.get("sell_price") or 0),
@@ -2548,13 +2602,15 @@ _RECORD_TYPES = list(RECORD_COLLECTIONS.keys())
 SAMPIYON_TOOLS += [
     {"type": "function", "function": {
         "name": "add_other_product",
-        "description": "Lastik DIŞINDAKİ ürünleri (akü, jant, yağ, silecek, aksesuar...) stoğa ekler. Aynı isimde 'Diğer' ürün varsa stoğuna giriş yapar, yoksa yeni ürün oluşturur. Direkt yap, fiyat sorma (söylenmezse 0). name kısa ve standart olsun (ör: 'Akü 72Ah'), category tek kelime (ör: 'Akü', 'Jant', 'Yağ').",
+        "description": "Lastik DIŞINDAKİ ürünleri (akü, jant, yağ, silecek, aksesuar...) stoğa ekler. Aynı ürün (isim yazımı farklı olsa da, ör. '72 Amper Akü' = 'Akü 72Ah') varsa stoğuna giriş yapar; benzer ama farklı ürün varsa needs_choice döner → kullanıcıya sor; yoksa yeni ürün oluşturur. Direkt yap, fiyat sorma (söylenmezse 0). name kısa ve standart olsun (ör: 'Akü 72Ah'), category tek kelime (ör: 'Akü', 'Jant', 'Yağ').",
         "parameters": {"type": "object", "properties": {
             "name": {"type": "string"}, "category": {"type": "string"},
             "unit": {"type": "string", "enum": ["adet", "takım", "litre", "kutu", "paket", "metre"]},
             "quantity": {"type": "number"}, "brand": {"type": "string"}, "model": {"type": "string"},
             "buy_price": {"type": "number", "description": "KDV hariç alış"}, "sell_price": {"type": "number", "description": "KDV dahil satış"},
-            "kdv_rate": {"type": "number"}, "note": {"type": "string"}},
+            "kdv_rate": {"type": "number"}, "note": {"type": "string"},
+            "target_id": {"type": "string", "description": "Kullanıcı mevcut benzer ürünü seçtiyse onun id'si"},
+            "force_new": {"type": "boolean", "description": "Kullanıcı yeni ürün açılmasını istediyse true"}},
             "required": ["name", "quantity"]}}},
     {"type": "function", "function": {
         "name": "add_spending",
