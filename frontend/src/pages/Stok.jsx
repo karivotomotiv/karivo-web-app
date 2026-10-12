@@ -10,7 +10,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableFooter } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { Plus, Pencil, Trash2, Package, Search, Upload, ArrowDown, ArrowUp, Sparkles, Check, X, CircleDot, Boxes, ChevronDown } from "lucide-react";
+import { Plus, Pencil, Trash2, Package, Search, Upload, ArrowDown, ArrowUp, Sparkles, Check, X, CircleDot, Boxes, ChevronDown, GitMerge } from "lucide-react";
+import { DuplicatesDialog } from "@/components/stock/DuplicatesDialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 
@@ -41,6 +42,7 @@ export default function Stok() {
   const [seasonFilter, setSeasonFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [dup, setDup] = useState(null);
+  const [dupsOpen, setDupsOpen] = useState(false);
   const [catFilter, setCatFilter] = useState("all");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -243,6 +245,9 @@ export default function Stok() {
           <Button variant="outline" onClick={() => fileRef.current?.click()} disabled={importing} className="border-slate-300" data-testid="tire-import-btn">
             <Sparkles className="w-4 h-4 mr-2 text-indigo-600" />
             {importing ? "Şampiyon okuyor..." : "AI ile Belge Yükle"}
+          </Button>
+          <Button variant="outline" onClick={() => setDupsOpen(true)} data-testid="find-duplicates-btn">
+            <GitMerge className="w-4 h-4 mr-2" /> Mükerrerleri Bul
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -459,6 +464,13 @@ export default function Stok() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <DuplicatesDialog
+        open={dupsOpen}
+        onOpenChange={setDupsOpen}
+        onChanged={load}
+        onEditProduct={(id) => { const it = items.find((x) => x.id === id); if (it) openEdit(it); }}
+      />
 
       {/* Similar product dialog */}
       <Dialog open={!!dup} onOpenChange={(o) => !o && setDup(null)}>

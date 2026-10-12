@@ -894,6 +894,110 @@ async def similar_products(name: str, brand: str = "", model: str = "", exclude_
     return await _find_similar_products(name, brand, model, exclude_id)
 
 
+def _norm_str(v: str) -> str:
+    return re.sub(r"\s+", "", (v or "").translate(_TR_MAP).lower())
+
+
+async def _product_row(d: dict) -> dict:
+    return {
+        "id": d["id"], "label": _tire_label(d), "product_type": d.get("product_type", "lastik"),
+        "quantity": d.get("quantity", 0), "unit": d.get("unit", "adet"), "category": d.get("category", ""),
+        "brand": d.get("brand", ""), "model": d.get("model", ""), "size": d.get("size", ""),
+        "season": d.get("season", ""), "dot": d.get("dot", ""),
+        "buy_price": d.get("buy_price", 0), "sell_price": d.get("sell_price", 0), "kdv_rate": d.get("kdv_rate", 20),
+        "created_at": d.get("created_at", ""),
+        "movement_count": await db.stock_movements.count_documents({"tire_id": d["id"]}),
+        "sale_count": await db.sales.count_documents({"items.tire_id": d["id"]}),
+    }
+
+
+def _union_groups(keys: list, related) -> list:
+    parent = list(range(len(keys)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    for i in range(len(keys)):
+        for j in range(i + 1, len(keys)):
+            if related(keys[i], keys[j]):
+                parent[find(i)] = find(j)
+    out: dict = {}
+    for i in range(len(keys)):
+        out.setdefault(find(i), []).append(i)
+    return [g for g in out.values() if len(g) > 1]
+
+
+@api_router.get("/tires/duplicates")
+async def find_duplicates(user: dict = Depends(get_current_user)):
+    """Mükerrer ürün grupları: exact (aynı ürün) ve similar (olası mükerrer)."""
+    docs = await db.tires.find({}, {"_id": 0}).sort("created_at", 1).to_list(10000)
+    buckets: dict = {}
+    for d in docs:
+        if d.get("product_type") == "diger":
+            key = ("diger", _norm_tokens(d.get("name", ""), d.get("brand", ""), d.get("model", "")))
+        else:
+            key = ("lastik", _norm_str(d.get("brand")), _norm_str(d.get("model")), _norm_str(d.get("size")),
+                   d.get("season", ""), _norm_str(d.get("dot")))
+        buckets.setdefault(key, []).append(d)
+    exact = [g for g in buckets.values() if len(g) > 1]
+
+    keys = list(buckets.keys())
+
+    def related(a, b):
+        if a[0] != b[0]:
+            return False
+        if a[0] == "diger":
+            x, y = a[1], b[1]
+            return bool(x and y) and (x <= y or y <= x or len(x & y) / len(x | y) >= 0.6)
+        return a[1] == b[1] and a[3] == b[3]  # lastik: aynı marka + ebat, diğer alanlar farklı
+    similar = [[d for i in g for d in buckets[keys[i]]] for g in _union_groups(keys, related)]
+    return {
+        "exact_groups": [[await _product_row(d) for d in g] for g in exact],
+        "similar_groups": [[await _product_row(d) for d in g] for g in similar],
+    }
+
+
+class MergeIn(BaseModel):
+    target_id: str
+    source_ids: List[str]
+
+
+@api_router.post("/tires/merge")
+async def merge_products(data: MergeIn, user: dict = Depends(get_current_user)):
+    """Kaynak ürünleri ana ürüne birleştirir: adet toplanır, stok hareketleri ve satış kalemleri ana ürüne bağlanır, kaynaklar silinir."""
+    source_ids = [i for i in dict.fromkeys(data.source_ids) if i != data.target_id]
+    if not source_ids:
+        raise HTTPException(400, "Birleştirilecek en az bir ürün seçin")
+    target = await db.tires.find_one({"id": data.target_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Ana ürün bulunamadı")
+    sources = await db.tires.find({"id": {"$in": source_ids}}, {"_id": 0}).to_list(100)
+    if len(sources) != len(source_ids):
+        raise HTTPException(404, "Birleştirilecek ürünlerden biri bulunamadı")
+    if any(s.get("product_type", "lastik") != target.get("product_type", "lastik") for s in sources):
+        raise HTTPException(400, "Lastik ile diğer ürün birleştirilemez")
+    added = sum(float(s.get("quantity", 0)) for s in sources)
+    before = float(target.get("quantity", 0))
+    after = before + added
+    await db.stock_movements.update_many({"tire_id": {"$in": source_ids}}, {"$set": {"tire_id": data.target_id}})
+    await db.sales.update_many({"items.tire_id": {"$in": source_ids}},
+                               {"$set": {"items.$[e].tire_id": data.target_id}},
+                               array_filters=[{"e.tire_id": {"$in": source_ids}}])
+    await db.tires.update_one({"id": data.target_id}, {"$set": {"quantity": after, "updated_at": now_iso()}})
+    labels = ", ".join(f"{_tire_label(s)} ({float(s.get('quantity', 0)):g})" for s in sources)
+    await db.stock_movements.insert_one({
+        "id": str(uuid.uuid4()), "tire_id": data.target_id, "tire_label": _tire_label(target),
+        "delta": 0.0, "before": after, "after": after, "reason": "birlestirme",
+        "note": f"Birleştirildi: {labels} → toplam {after:g}", "date": now_iso()[:10],
+        "created_by": user["id"], "created_by_name": user["name"], "created_at": now_iso(),
+    })
+    await db.tires.delete_many({"id": {"$in": source_ids}})
+    await log_activity(user, "update", "Stok", f"Mükerrer birleştirme: {labels} → {_tire_label(target)}")
+    return {"ok": True, "target_id": data.target_id, "merged": len(sources), "quantity": after}
+
+
 @api_router.get("/tires", response_model=List[TireOut])
 async def list_tires(
     user: dict = Depends(get_current_user),

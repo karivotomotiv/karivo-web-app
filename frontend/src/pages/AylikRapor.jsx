@@ -12,7 +12,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
 const PAY = { nakit: "Nakit", kart: "Kart", havale: "Havale", veresiye: "Veresiye" };
-const REASON = { alis: "Alış", satis: "Satış", iade: "İade", "sayim-duzeltme": "Sayım", fire: "Fire", diger: "Diğer", "ilk-kayit": "İlk kayıt", duzenleme: "Düzenleme" };
+const REASON = { alis: "Alış", satis: "Satış", iade: "İade", "sayim-duzeltme": "Sayım", fire: "Fire", diger: "Diğer", "ilk-kayit": "İlk kayıt", duzenleme: "Düzenleme", birlestirme: "Birleştirme" };
 
 const SimpleTable = ({ rows, cols, testId }) => (
   rows.length === 0 ? (
