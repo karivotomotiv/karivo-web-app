@@ -4,13 +4,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Users, Pencil, X, LogOut } from "lucide-react";
+import { Users, Pencil, X, LogOut, History } from "lucide-react";
+import { LoginHistory } from "@/components/settings/LoginHistory";
 import { toast } from "sonner";
 
 const UserRow = ({ u, meId, onSaved }) => {
   const [edit, setEdit] = useState(false);
   const [form, setForm] = useState({ name: u.name, email: u.email, password: "" });
   const [saving, setSaving] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
 
   const save = async (e) => {
     e.preventDefault();
@@ -33,6 +35,7 @@ const UserRow = ({ u, meId, onSaved }) => {
 
   if (!edit) {
     return (
+      <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2" data-testid={`admin-user-${u.id}`}>
         <div className="min-w-0">
           <div className="text-sm font-semibold text-slate-900">{u.name} {u.id === meId && <span className="text-xs text-slate-400">(siz)</span>} {u.role === "admin" && <Badge variant="outline" className="ml-1 text-[10px]">Yönetici</Badge>}</div>
@@ -46,7 +49,10 @@ const UserRow = ({ u, meId, onSaved }) => {
         {u.id !== meId && (
           <Button size="sm" variant="ghost" className="text-rose-600 hover:bg-rose-50" onClick={forceLogout} title="Oturumlarını kapat" data-testid={`admin-user-logout-${u.id}`}><LogOut className="w-4 h-4" /></Button>
         )}
+        <Button size="sm" variant="ghost" className={showHistory ? "bg-slate-200" : ""} onClick={() => setShowHistory((v) => !v)} title="Giriş geçmişi" data-testid={`admin-user-history-${u.id}`}><History className="w-4 h-4" /></Button>
         <Button size="sm" variant="ghost" onClick={() => { setForm({ name: u.name, email: u.email, password: "" }); setEdit(true); }} data-testid={`admin-user-edit-${u.id}`}><Pencil className="w-4 h-4" /></Button>
+      </div>
+      {showHistory && <LoginHistory userId={u.id} />}
       </div>
     );
   }

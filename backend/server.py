@@ -307,9 +307,10 @@ async def _send_new_device_emails(user: dict, browser: str, os_: str, ip: str) -
             logger.error(f"Yeni cihaz e-postası gönderilemedi ({u['email']}): {e}")
 
 
-async def _register_login_device(user: dict, device_id: Optional[str], request: Request) -> None:
+async def _register_login_device(user: dict, device_id: Optional[str], request: Request) -> bool:
+    """Cihazı kaydeder; bildirim gerektiren yeni cihazsa True döner."""
     if not device_id:
-        return
+        return False
     ua = request.headers.get("user-agent", "")
     browser, os_ = _parse_ua(ua)
     ip = _client_ip(request)
@@ -317,12 +318,30 @@ async def _register_login_device(user: dict, device_id: Optional[str], request: 
     known = await db.user_devices.find_one({"user_id": user["id"], "device_id": device_id})
     if known:
         await db.user_devices.update_one({"_id": known["_id"]}, {"$set": {"last_seen": now, "last_login_at": now, "ip": ip, "browser": browser, "os": os_}})
-        return
+        return False
     first_ever = await db.user_devices.count_documents({"user_id": user["id"]}) == 0
     await db.user_devices.insert_one({"id": str(uuid.uuid4()), "user_id": user["id"], "device_id": device_id, "browser": browser, "os": os_,
                                       "ip": ip, "user_agent": ua[:300], "first_seen": now, "last_seen": now, "last_login_at": now})
     if not first_ever:
         asyncio.create_task(_send_new_device_emails(user, browser, os_, ip))
+    return not first_ever
+
+
+LOGIN_HISTORY_KEEP = 30
+
+
+async def _record_login(user: dict, request: Request, success: bool, reason: str, new_device: bool = False) -> None:
+    browser, os_ = _parse_ua(request.headers.get("user-agent", ""))
+    await db.login_history.insert_one({"id": str(uuid.uuid4()), "user_id": user["id"], "success": success, "reason": reason,
+                                       "new_device": new_device, "browser": browser, "os": os_, "ip": _client_ip(request), "at": now_iso()})
+    old = await db.login_history.find({"user_id": user["id"]}, {"_id": 1}).sort("at", -1).skip(LOGIN_HISTORY_KEEP).to_list(1000)
+    if old:
+        await db.login_history.delete_many({"_id": {"$in": [o["_id"] for o in old]}})
+
+
+@api_router.get("/admin/users/{user_id}/login-history")
+async def admin_login_history(user_id: str, admin: dict = Depends(require_admin)):
+    return await db.login_history.find({"user_id": user_id}, {"_id": 0}).sort("at", -1).to_list(LOGIN_HISTORY_KEEP)
 
 
 @api_router.post("/auth/login")
@@ -332,6 +351,9 @@ async def login(data: LoginIn, request: Request):
     att = await db.login_attempts.find_one({"email": email}, {"_id": 0})
     if att and att.get("locked_until") and datetime.fromisoformat(att["locked_until"]) > now:
         mins = max(1, int((datetime.fromisoformat(att["locked_until"]) - now).total_seconds() // 60) + 1)
+        locked_user = await db.users.find_one({"email": email}, {"_id": 0, "id": 1})
+        if locked_user:
+            await _record_login(locked_user, request, False, "locked")
         raise HTTPException(status_code=429, detail=f"Çok fazla hatalı deneme. {mins} dakika sonra tekrar deneyin veya şifrenizi sıfırlayın.")
     user = await db.users.find_one({"email": email}, {"_id": 0})
     if not user or not verify_password(data.password, user["password_hash"]):
@@ -340,11 +362,14 @@ async def login(data: LoginIn, request: Request):
         if fails >= MAX_LOGIN_FAILS:
             upd = {"email": email, "fails": 0, "locked_until": (now + timedelta(minutes=LOCKOUT_MINUTES)).isoformat(), "updated_at": now.isoformat()}
         await db.login_attempts.replace_one({"email": email}, upd, upsert=True)
+        if user:
+            await _record_login(user, request, False, "wrong_password_locked" if fails >= MAX_LOGIN_FAILS else "wrong_password")
         if fails >= MAX_LOGIN_FAILS:
             raise HTTPException(status_code=429, detail=f"{MAX_LOGIN_FAILS} hatalı deneme yapıldı. Hesap {LOCKOUT_MINUTES} dakika kilitlendi.")
         raise HTTPException(status_code=401, detail="E-posta veya şifre hatalı")
     await db.login_attempts.delete_one({"email": email})
-    await _register_login_device(user, data.device_id, request)
+    new_device = await _register_login_device(user, data.device_id, request)
+    await _record_login(user, request, True, "ok", new_device)
     token = create_token(user["id"], user["email"], user.get("token_version", 0), data.device_id)
     await log_activity(user, "login", "auth", f"{user['name']} giriş yaptı")
     return {"token": token, "user": _public_user(user)}
@@ -3506,6 +3531,7 @@ async def startup_event():
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     await db.login_attempts.create_index("email", unique=True)
     await db.user_devices.create_index([("user_id", 1), ("device_id", 1)], unique=True)
+    await db.login_history.create_index([("user_id", 1), ("at", -1)])
 
     # Sadece eksik kullanıcıları oluştur; mevcut bilgiler (uygulamadan değiştirilmiş e-posta/şifre) ezilmez
     for u in seed_users:
