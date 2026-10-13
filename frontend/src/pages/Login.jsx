@@ -1,17 +1,12 @@
 import { useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
-import { Navigate } from "react-router-dom";
+import { Navigate, Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Building2, Lock } from "lucide-react";
-
-const DEMO_USERS = [
-  { name: "Murat", email: "murat@karivo.local", password: "Murat2026!" },
-  { name: "Özkan", email: "ozkan@karivo.local", password: "Ozkan2026!" },
-];
 
 export default function Login() {
   const { user, login } = useAuth();
@@ -31,16 +26,6 @@ export default function Login() {
     if (!r.ok) setErr(r.error);
   };
 
-  const quickLogin = async (u) => {
-    setEmail(u.email);
-    setPassword(u.password);
-    setErr("");
-    setLoading(true);
-    const r = await login(u.email, u.password);
-    setLoading(false);
-    if (!r.ok) setErr(r.error);
-  };
-
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(13,148,136,0.08),transparent_50%),radial-gradient(circle_at_80%_80%,rgba(15,23,42,0.06),transparent_50%)]" />
@@ -53,7 +38,7 @@ export default function Login() {
             Karivo Otomotiv
           </CardTitle>
           <CardDescription className="text-slate-600">
-            Gelir, gider, stok ve görev takibi için hesabınıza giriş yapın.
+            Yönetim paneline giriş yapın.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -67,7 +52,7 @@ export default function Login() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="ahmet@sirket.com"
+                placeholder="ornek@gmail.com"
                 autoComplete="email"
                 required
                 data-testid="login-email-input"
@@ -104,35 +89,10 @@ export default function Login() {
             </Button>
           </form>
 
-          <div className="relative py-2">
-            <div className="absolute inset-0 flex items-center">
-              <span className="w-full border-t border-slate-200" />
-            </div>
-            <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-white px-2 text-slate-500">Hızlı Giriş</span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-2">
-            {DEMO_USERS.map((u, i) => (
-              <Button
-                key={u.email}
-                type="button"
-                variant="outline"
-                onClick={() => quickLogin(u)}
-                disabled={loading}
-                className="justify-start border-slate-200 hover:border-teal-500 hover:bg-teal-50 hover:text-teal-900"
-                data-testid={`quick-login-user${i + 1}`}
-              >
-                <span className="w-8 h-8 rounded-lg bg-teal-100 text-teal-700 flex items-center justify-center text-sm font-bold mr-3">
-                  {u.name.charAt(0)}
-                </span>
-                <div className="flex flex-col items-start">
-                  <span className="text-sm font-semibold">{u.name}</span>
-                  <span className="text-xs text-slate-500">{u.email}</span>
-                </div>
-              </Button>
-            ))}
+          <div className="text-center">
+            <Link to="/sifremi-unuttum" className="text-sm font-semibold text-teal-700 hover:underline" data-testid="forgot-password-link">
+              Şifremi unuttum
+            </Link>
           </div>
         </CardContent>
       </Card>

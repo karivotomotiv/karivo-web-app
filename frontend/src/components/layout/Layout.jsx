@@ -22,7 +22,6 @@ import {
   CalendarDays,
   Menu,
 } from "lucide-react";
-import { Toaster } from "@/components/ui/sonner";
 
 const NAV = [
   { to: "/", label: "Özet", icon: LayoutDashboard, testId: "nav-dashboard", end: true },
@@ -155,7 +154,6 @@ export default function Layout() {
 
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
       <SampiyonWidget />
-      <Toaster position="top-right" richColors />
     </div>
   );
 }

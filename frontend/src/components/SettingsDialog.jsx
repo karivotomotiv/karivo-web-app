@@ -7,12 +7,16 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Mail, Save, Info } from "lucide-react";
 import { toast } from "sonner";
+import { useAuth } from "@/contexts/AuthContext";
+import { ChangePassword } from "@/components/settings/ChangePassword";
+import { UserManagement } from "@/components/settings/UserManagement";
 
 export default function SettingsDialog({ open, onOpenChange }) {
   const [settings, setSettings] = useState(null);
   const [email, setEmail] = useState("");
   const [recipients, setRecipients] = useState([]);
   const [saving, setSaving] = useState(false);
+  const { user } = useAuth();
 
   useEffect(() => {
     if (!open) return;
@@ -46,14 +50,18 @@ export default function SettingsDialog({ open, onOpenChange }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Bildirim Ayarları</DialogTitle>
+          <DialogTitle>Ayarlar</DialogTitle>
           <DialogDescription>
             Düşük stok uyarıları için gerçek bir e-posta adresi girin. Boş bırakırsanız giriş e-postanız kullanılır.
           </DialogDescription>
         </DialogHeader>
 
+        {user?.role === "admin" && open && <UserManagement meId={user.id} />}
+        {open && <ChangePassword />}
+
+        <div className="text-sm font-bold text-slate-900 pt-2">Bildirim Ayarları</div>
         <Alert className="border-sky-300 bg-sky-50">
           <Info className="h-4 w-4 text-sky-700" />
           <AlertDescription className="text-sky-900 text-xs">

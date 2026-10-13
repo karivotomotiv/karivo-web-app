@@ -11,6 +11,8 @@ import os
 import io
 import re
 import uuid
+import hashlib
+import secrets
 import ipaddress
 import logging
 import jwt
@@ -61,10 +63,11 @@ def verify_password(plain: str, hashed: str) -> bool:
     except Exception:
         return False
 
-def create_token(user_id: str, email: str) -> str:
+def create_token(user_id: str, email: str, token_version: int = 0) -> str:
     payload = {
         "sub": user_id,
         "email": email,
+        "tv": int(token_version or 0),
         "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXP_HOURS),
         "iat": datetime.now(timezone.utc),
     }
@@ -84,6 +87,14 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
     if not user:
         raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    if int(payload.get("tv", 0)) != int(user.get("token_version", 0)):
+        raise HTTPException(status_code=401, detail="Oturum sonlandırıldı, lütfen tekrar giriş yapın")
+    return user
+
+
+async def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Bu işlem için yönetici yetkisi gerekli")
     return user
 
 async def log_activity(user: dict, action: str, section: str, details: str = ""):
@@ -208,18 +219,51 @@ class TodoOut(BaseModel):
 # -----------------------------
 # Auth routes
 # -----------------------------
+MAX_LOGIN_FAILS = 5
+LOCKOUT_MINUTES = 15
+RESET_CODE_MINUTES = 60
+MAX_RESET_CODE_ATTEMPTS = 5
+MIN_PASSWORD_LEN = 8
+
+
+COMPANY_NAME = os.environ["COMPANY_NAME"]
+
+
+def _hash_code(code: str) -> str:
+    return hashlib.sha256(f"{JWT_SECRET}:{code}".encode()).hexdigest()
+
+
+def _check_password_policy(pw: str) -> None:
+    if len(pw or "") < MIN_PASSWORD_LEN:
+        raise HTTPException(400, f"Şifre en az {MIN_PASSWORD_LEN} karakter olmalı")
+
+
+def _public_user(u: dict) -> dict:
+    return {"id": u["id"], "email": u["email"], "name": u["name"], "role": u.get("role", "user")}
+
+
 @api_router.post("/auth/login")
 async def login(data: LoginIn):
     email = data.email.lower().strip()
+    now = datetime.now(timezone.utc)
+    att = await db.login_attempts.find_one({"email": email}, {"_id": 0})
+    if att and att.get("locked_until") and datetime.fromisoformat(att["locked_until"]) > now:
+        mins = max(1, int((datetime.fromisoformat(att["locked_until"]) - now).total_seconds() // 60) + 1)
+        raise HTTPException(status_code=429, detail=f"Çok fazla hatalı deneme. {mins} dakika sonra tekrar deneyin veya şifrenizi sıfırlayın.")
     user = await db.users.find_one({"email": email}, {"_id": 0})
     if not user or not verify_password(data.password, user["password_hash"]):
+        fails = (att.get("fails", 0) if att and not att.get("locked_until") else 0) + 1
+        upd = {"email": email, "fails": fails, "updated_at": now.isoformat()}
+        if fails >= MAX_LOGIN_FAILS:
+            upd = {"email": email, "fails": 0, "locked_until": (now + timedelta(minutes=LOCKOUT_MINUTES)).isoformat(), "updated_at": now.isoformat()}
+        await db.login_attempts.replace_one({"email": email}, upd, upsert=True)
+        if fails >= MAX_LOGIN_FAILS:
+            raise HTTPException(status_code=429, detail=f"{MAX_LOGIN_FAILS} hatalı deneme yapıldı. Hesap {LOCKOUT_MINUTES} dakika kilitlendi.")
         raise HTTPException(status_code=401, detail="E-posta veya şifre hatalı")
-    token = create_token(user["id"], user["email"])
+    await db.login_attempts.delete_one({"email": email})
+    token = create_token(user["id"], user["email"], user.get("token_version", 0))
     await log_activity(user, "login", "auth", f"{user['name']} giriş yaptı")
-    return {
-        "token": token,
-        "user": {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"]},
-    }
+    return {"token": token, "user": _public_user(user)}
 
 @api_router.get("/auth/me", response_model=UserOut)
 async def me(user: dict = Depends(get_current_user)):
@@ -229,6 +273,160 @@ async def me(user: dict = Depends(get_current_user)):
 async def logout(user: dict = Depends(get_current_user)):
     await log_activity(user, "logout", "auth", f"{user['name']} çıkış yaptı")
     return {"ok": True}
+
+
+async def _set_password(user_id: str, new_password: str) -> dict:
+    """Şifreyi değiştirir ve tüm açık oturumları geçersiz kılar (token_version + 1)."""
+    await db.users.update_one({"id": user_id}, {"$set": {"password_hash": hash_password(new_password), "password_changed_at": now_iso()},
+                                                "$inc": {"token_version": 1}})
+    return await db.users.find_one({"id": user_id}, {"_id": 0})
+
+
+class ForgotPasswordIn(BaseModel):
+    email: EmailStr
+
+
+class ResetCodeIn(BaseModel):
+    email: EmailStr
+    code: str
+
+
+class ResetPasswordIn(ResetCodeIn):
+    new_password: str
+
+
+def _render_reset_code_email(name: str, code: str) -> str:
+    return (
+        '<table role="presentation" width="100%" style="background:#f8fafc;padding:24px"><tr><td align="center">'
+        '<table role="presentation" width="520" style="background:#ffffff;border-radius:12px;padding:28px;font-family:Arial,sans-serif;color:#0f172a">'
+        f'<tr><td><h2 style="margin:0 0 8px">{escape(COMPANY_NAME)}</h2>'
+        f'<p style="margin:0 0 16px;color:#475569">Merhaba {escape(name)}, şifre sıfırlama talebiniz için doğrulama kodunuz:</p>'
+        f'<div style="font-size:32px;font-weight:800;letter-spacing:8px;background:#f1f5f9;border-radius:10px;padding:16px;text-align:center">{code}</div>'
+        f'<p style="margin:16px 0 0;color:#475569;font-size:13px">Bu kodu uygulamadaki şifre sıfırlama ekranına girin. Kod {RESET_CODE_MINUTES} dakika geçerlidir ve tek kullanımlıktır.</p>'
+        '<p style="margin:8px 0 0;color:#94a3b8;font-size:12px">Bu talebi siz yapmadıysanız bu e-postayı yok sayabilirsiniz; şifreniz değişmez.</p>'
+        '</td></tr></table></td></tr></table>'
+    )
+
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(data: ForgotPasswordIn):
+    email = data.email.lower().strip()
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "Bu e-posta adresi sistemde kayıtlı değil")
+    now = datetime.now(timezone.utc)
+    last = await db.password_reset_tokens.find_one({"user_id": user["id"], "used": False}, {"_id": 0}, sort=[("created_at", -1)])
+    if last and (now - datetime.fromisoformat(last["created_at"])).total_seconds() < 60:
+        raise HTTPException(429, "Kod az önce gönderildi. Lütfen 1 dakika sonra tekrar deneyin.")
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    await db.password_reset_tokens.update_many({"user_id": user["id"], "used": False}, {"$set": {"used": True}})
+    tok_id = str(uuid.uuid4())
+    await db.password_reset_tokens.insert_one({
+        "id": tok_id, "user_id": user["id"], "code_hash": _hash_code(code), "attempts": 0, "used": False,
+        "created_at": now.isoformat(), "expires_at": now + timedelta(minutes=RESET_CODE_MINUTES),
+    })
+    to = user.get("notification_email") or user["email"]
+    try:
+        await send_email(to=to, subject=f"{COMPANY_NAME} şifre sıfırlama kodu", html=_render_reset_code_email(user["name"], code))
+    except Exception:
+        await db.password_reset_tokens.delete_one({"id": tok_id})
+        raise
+    await log_activity(user, "update", "auth", "Şifre sıfırlama kodu istendi")
+    return {"ok": True, "sent_to": to}
+
+
+async def _verify_reset_code(email: str, code: str) -> tuple:
+    user = await db.users.find_one({"email": email.lower().strip()}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "Bu e-posta adresi sistemde kayıtlı değil")
+    tok = await db.password_reset_tokens.find_one({"user_id": user["id"], "used": False}, {"_id": 0}, sort=[("created_at", -1)])
+    exp = tok and tok["expires_at"]
+    if exp is not None and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if not tok or exp < datetime.now(timezone.utc):
+        raise HTTPException(400, "Geçerli bir kod bulunamadı veya kodun süresi doldu. Lütfen yeni kod isteyin.")
+    if tok["attempts"] >= MAX_RESET_CODE_ATTEMPTS:
+        await db.password_reset_tokens.update_one({"id": tok["id"]}, {"$set": {"used": True}})
+        raise HTTPException(400, "Çok fazla hatalı kod denemesi. Lütfen yeni kod isteyin.")
+    if not secrets.compare_digest(tok["code_hash"], _hash_code((code or "").strip())):
+        await db.password_reset_tokens.update_one({"id": tok["id"]}, {"$inc": {"attempts": 1}})
+        left = MAX_RESET_CODE_ATTEMPTS - tok["attempts"] - 1
+        raise HTTPException(400, f"Kod hatalı. {left} deneme hakkınız kaldı." if left > 0 else "Kod hatalı. Lütfen yeni kod isteyin.")
+    return user, tok
+
+
+@api_router.post("/auth/verify-reset-code")
+async def verify_reset_code(data: ResetCodeIn):
+    await _verify_reset_code(data.email, data.code)
+    return {"ok": True}
+
+
+@api_router.post("/auth/reset-password")
+async def reset_password(data: ResetPasswordIn):
+    _check_password_policy(data.new_password)
+    user, tok = await _verify_reset_code(data.email, data.code)
+    await db.password_reset_tokens.update_one({"id": tok["id"]}, {"$set": {"used": True, "used_at": now_iso()}})
+    await _set_password(user["id"], data.new_password)
+    await db.login_attempts.delete_one({"email": user["email"]})
+    await log_activity(user, "update", "auth", f"{user['name']} şifresini sıfırladı")
+    return {"ok": True}
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@api_router.post("/auth/change-password")
+async def change_password(data: ChangePasswordIn, user: dict = Depends(get_current_user)):
+    full = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    if not verify_password(data.current_password, full["password_hash"]):
+        raise HTTPException(400, "Mevcut şifre hatalı")
+    _check_password_policy(data.new_password)
+    updated = await _set_password(user["id"], data.new_password)
+    await log_activity(user, "update", "auth", f"{user['name']} şifresini değiştirdi")
+    return {"ok": True, "token": create_token(updated["id"], updated["email"], updated.get("token_version", 0))}
+
+
+class AdminUserUpdateIn(BaseModel):
+    name: str
+    email: EmailStr
+    password: Optional[str] = None
+
+
+@api_router.get("/admin/users")
+async def admin_list_users(admin: dict = Depends(require_admin)):
+    docs = await db.users.find({}, {"_id": 0, "password_hash": 0}).sort("user_key", 1).to_list(50)
+    return [{**_public_user(d), "user_key": d.get("user_key"), "password_changed_at": d.get("password_changed_at")} for d in docs]
+
+
+@api_router.put("/admin/users/{user_id}")
+async def admin_update_user(user_id: str, data: AdminUserUpdateIn, admin: dict = Depends(require_admin)):
+    target = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Kullanıcı bulunamadı")
+    name, email = data.name.strip(), data.email.lower().strip()
+    if not name:
+        raise HTTPException(400, "Ad boş olamaz")
+    if await db.users.find_one({"email": email, "id": {"$ne": user_id}}):
+        raise HTTPException(400, "Bu e-posta başka bir kullanıcıda kayıtlı")
+    upd: dict = {"name": name, "email": email}
+    inc = {}
+    if email != target["email"]:
+        inc["token_version"] = 1
+    if data.password:
+        _check_password_policy(data.password)
+        upd.update({"password_hash": hash_password(data.password), "password_changed_at": now_iso()})
+        inc["token_version"] = 1
+    await db.users.update_one({"id": user_id}, {"$set": upd, **({"$inc": inc} if inc else {})})
+    updated = await db.users.find_one({"id": user_id}, {"_id": 0})
+    changes = [k for k, v in (("ad", name != target["name"]), ("e-posta", email != target["email"]), ("şifre", bool(data.password))) if v]
+    await log_activity(admin, "update", "Kullanıcılar", f"{target['name']} güncellendi: {', '.join(changes) or 'değişiklik yok'}")
+    res = {"ok": True, "user": _public_user(updated)}
+    if user_id == admin["id"] and inc:
+        res["token"] = create_token(updated["id"], updated["email"], updated.get("token_version", 0))
+    return res
+
 
 # -----------------------------
 # Generic CRUD factory (for Gelirler/Giderler)
@@ -3160,42 +3358,28 @@ async def startup_event():
             "email": os.environ["USER2_EMAIL"].lower(),
             "password": os.environ["USER2_PASSWORD"],
             "name": os.environ["USER2_NAME"],
-            "role": "user",
+            "role": "admin",
             "user_key": "user2",
         },
     ]
 
-    # Eski kullanıcıları temizle: user_key henüz yoksa bile email .env'dekiyle uyuşmayanları sil
-    valid_emails = {u["email"] for u in seed_users}
-    valid_keys = {u["user_key"] for u in seed_users}
-    await db.users.delete_many({
-        "email": {"$nin": list(valid_emails)},
-        "user_key": {"$nin": list(valid_keys)},
-    })
+    await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
+    await db.login_attempts.create_index("email", unique=True)
 
+    # Sadece eksik kullanıcıları oluştur; mevcut bilgiler (uygulamadan değiştirilmiş e-posta/şifre) ezilmez
     for u in seed_users:
         existing = await db.users.find_one({"user_key": u["user_key"]})
         if existing is None:
             existing = await db.users.find_one({"email": u["email"]})
         if existing is None:
-            doc = {
-                "id": str(uuid.uuid4()),
-                "email": u["email"],
-                "name": u["name"],
-                "role": u["role"],
-                "user_key": u["user_key"],
-                "password_hash": hash_password(u["password"]),
-                "created_at": now_iso(),
-            }
-            await db.users.insert_one(doc)
+            await db.users.insert_one({
+                "id": str(uuid.uuid4()), "email": u["email"], "name": u["name"], "role": u["role"],
+                "user_key": u["user_key"], "password_hash": hash_password(u["password"]),
+                "token_version": 0, "created_at": now_iso(),
+            })
             logger.info(f"Seeded user: {u['email']}")
         else:
-            # Email/isim/şifre .env'den güncellenmişse eşitle
-            update = {"user_key": u["user_key"], "email": u["email"], "name": u["name"], "role": u["role"]}
-            if not verify_password(u["password"], existing.get("password_hash", "")):
-                update["password_hash"] = hash_password(u["password"])
-            await db.users.update_one({"id": existing["id"]}, {"$set": update})
-            logger.info(f"Updated user ({u['user_key']}): {u['email']}")
+            await db.users.update_one({"id": existing["id"]}, {"$set": {"user_key": u["user_key"], "role": u["role"]}})
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

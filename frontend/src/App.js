@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider } from "@/contexts/AuthContext";
 import Layout from "@/components/layout/Layout";
 import Login from "@/pages/Login";
@@ -8,6 +9,7 @@ import Giderler from "@/pages/Giderler";
 import Faturalar from "@/pages/Faturalar";
 import Stok from "@/pages/Stok";
 import AylikRapor from "@/pages/AylikRapor";
+import SifremiUnuttum from "@/pages/SifremiUnuttum";
 import Harcamalar from "@/pages/Harcamalar";
 import Yapilacaklar from "@/pages/Yapilacaklar";
 import ActivityLog from "@/pages/ActivityLog";
@@ -20,9 +22,11 @@ import "@/App.css";
 export default function App() {
   return (
     <AuthProvider>
+      <Toaster position="top-right" richColors />
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/sifremi-unuttum" element={<SifremiUnuttum />} />
           <Route path="/" element={<Layout />}>
             <Route index element={<Dashboard />} />
             <Route path="satislar" element={<Satislar />} />
