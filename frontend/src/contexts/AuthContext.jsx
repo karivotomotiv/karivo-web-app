@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from "react";
-import { api, extractError } from "@/lib/api";
+import { api, extractError, getDeviceId } from "@/lib/api";
 
 const AuthContext = createContext(null);
 
@@ -15,7 +15,7 @@ export const AuthProvider = ({ children }) => {
       return;
     }
     api.get("/auth/me")
-      .then((r) => setUser(r.data))
+      .then((r) => { setUser(r.data); api.post("/auth/device/touch", { device_id: getDeviceId() }).catch(() => {}); })
       .catch(() => {
         localStorage.removeItem("ks_token");
         setUser(false);
@@ -23,9 +23,16 @@ export const AuthProvider = ({ children }) => {
       .finally(() => setLoading(false));
   }, []);
 
+  // Oturum yönetici tarafından kapatılırsa en geç 30 sn içinde girişe yönlendir
+  useEffect(() => {
+    if (!user) return undefined;
+    const t = setInterval(() => { api.get("/auth/me").catch(() => {}); }, 30000);
+    return () => clearInterval(t);
+  }, [user]);
+
   const login = async (email, password) => {
     try {
-      const { data } = await api.post("/auth/login", { email, password });
+      const { data } = await api.post("/auth/login", { email, password, device_id: getDeviceId() });
       localStorage.setItem("ks_token", data.token);
       setUser(data.user);
       return { ok: true };

@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { api, extractError } from "@/lib/api";
+import { api, extractError, formatDateTime } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Users, Pencil, X } from "lucide-react";
+import { Users, Pencil, X, LogOut } from "lucide-react";
 import { toast } from "sonner";
 
 const UserRow = ({ u, meId, onSaved }) => {
@@ -24,13 +24,28 @@ const UserRow = ({ u, meId, onSaved }) => {
     } catch (err) { toast.error(extractError(err)); } finally { setSaving(false); }
   };
 
+  const forceLogout = async () => {
+    if (!window.confirm(`${u.name} kullanıcısının tüm cihazlardaki oturumları şimdi kapatılsın mı?`)) return;
+    try { await api.post(`/admin/users/${u.id}/logout`); toast.success(`${u.name} sistemden çıkarıldı`); onSaved(); }
+    catch (err) { toast.error(extractError(err)); }
+  };
+  const activeMin = u.last_active_at ? Math.round((Date.now() - new Date(u.last_active_at).getTime()) / 60000) : null;
+
   if (!edit) {
     return (
       <div className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2" data-testid={`admin-user-${u.id}`}>
         <div className="min-w-0">
           <div className="text-sm font-semibold text-slate-900">{u.name} {u.id === meId && <span className="text-xs text-slate-400">(siz)</span>} {u.role === "admin" && <Badge variant="outline" className="ml-1 text-[10px]">Yönetici</Badge>}</div>
           <div className="text-xs text-slate-500 truncate">{u.email}</div>
+          <div className="text-[11px] text-slate-500" data-testid={`admin-user-activity-${u.id}`}>
+            {activeMin !== null && activeMin <= 5 ? <span className="text-emerald-700 font-semibold">● Şu an aktif</span>
+              : u.last_active_at ? `Son aktif: ${formatDateTime(u.last_active_at)}` : "Henüz aktiflik yok"}
+            {u.last_device && ` · ${u.last_device.browser} · ${u.last_device.os}`} · {u.device_count} cihaz
+          </div>
         </div>
+        {u.id !== meId && (
+          <Button size="sm" variant="ghost" className="text-rose-600 hover:bg-rose-50" onClick={forceLogout} title="Oturumlarını kapat" data-testid={`admin-user-logout-${u.id}`}><LogOut className="w-4 h-4" /></Button>
+        )}
         <Button size="sm" variant="ghost" onClick={() => { setForm({ name: u.name, email: u.email, password: "" }); setEdit(true); }} data-testid={`admin-user-edit-${u.id}`}><Pencil className="w-4 h-4" /></Button>
       </div>
     );

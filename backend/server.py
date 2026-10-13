@@ -11,6 +11,7 @@ import os
 import io
 import re
 import uuid
+import asyncio
 import hashlib
 import secrets
 import ipaddress
@@ -63,17 +64,34 @@ def verify_password(plain: str, hashed: str) -> bool:
     except Exception:
         return False
 
-def create_token(user_id: str, email: str, token_version: int = 0) -> str:
+def create_token(user_id: str, email: str, token_version: int = 0, device_id: Optional[str] = None) -> str:
     payload = {
         "sub": user_id,
         "email": email,
         "tv": int(token_version or 0),
+        "did": device_id,
         "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXP_HOURS),
         "iat": datetime.now(timezone.utc),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+_DEVICE_TOUCH: dict = {}
+
+
+async def _touch_device(user_id: str, device_id: Optional[str]) -> None:
+    """Son aktiflik zamanını en fazla dakikada bir günceller."""
+    now = datetime.now(timezone.utc)
+    key = f"{user_id}:{device_id or '-'}"
+    last = _DEVICE_TOUCH.get(key)
+    if last and (now - last).total_seconds() < 60:
+        return
+    _DEVICE_TOUCH[key] = now
+    await db.users.update_one({"id": user_id}, {"$set": {"last_active_at": now.isoformat()}})
+    if device_id:
+        await db.user_devices.update_one({"user_id": user_id, "device_id": device_id}, {"$set": {"last_seen": now.isoformat()}})
+
+
+async def get_current_user(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
     if not credentials or not credentials.credentials:
         raise HTTPException(status_code=401, detail="Yetkilendirme gerekli")
     token = credentials.credentials
@@ -89,6 +107,8 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
     if int(payload.get("tv", 0)) != int(user.get("token_version", 0)):
         raise HTTPException(status_code=401, detail="Oturum sonlandırıldı, lütfen tekrar giriş yapın")
+    user["_device_id"] = request.headers.get("x-device-id") or payload.get("did")
+    await _touch_device(user["id"], user["_device_id"])
     return user
 
 
@@ -115,6 +135,7 @@ async def log_activity(user: dict, action: str, section: str, details: str = "")
 class LoginIn(BaseModel):
     email: str
     password: str
+    device_id: Optional[str] = None
 
 class UserOut(BaseModel):
     id: str
@@ -242,8 +263,70 @@ def _public_user(u: dict) -> dict:
     return {"id": u["id"], "email": u["email"], "name": u["name"], "role": u.get("role", "user")}
 
 
+def _parse_ua(ua: str) -> tuple:
+    ua = ua or ""
+    browser = next((n for k, n in (("Edg/", "Edge"), ("OPR/", "Opera"), ("SamsungBrowser", "Samsung Internet"), ("Chrome/", "Chrome"),
+                                    ("CriOS", "Chrome"), ("Firefox/", "Firefox"), ("FxiOS", "Firefox"), ("Safari/", "Safari")) if k in ua), "Bilinmeyen tarayıcı")
+    os_ = next((n for k, n in (("Android", "Android"), ("iPhone", "iPhone (iOS)"), ("iPad", "iPad (iOS)"), ("Windows", "Windows"),
+                                ("Mac OS X", "macOS"), ("CrOS", "ChromeOS"), ("Linux", "Linux")) if k in ua), "Bilinmeyen sistem")
+    return browser, os_
+
+
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "")
+    return (fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "")) or "bilinmiyor"
+
+
+def _render_new_device_email(owner_name: str, subject_name: str, browser: str, os_: str, ip: str, when: str, for_admin: bool) -> str:
+    who = f"{escape(subject_name)} hesabına" if for_admin else "Hesabınıza"
+    tail = ("Bu giriş beklenmiyorsa Ayarlar &gt; Kullanıcı Yönetimi bölümünden kullanıcının oturumunu kapatabilir ve şifresini değiştirebilirsiniz."
+            if for_admin else "Bu giriş size ait değilse hemen şifrenizi değiştirin ve Ayarlar &gt; Tanınan Cihazlar bölümünden tüm cihazlardan çıkış yapın.")
+    row = lambda k, v: f'<tr><td style="padding:6px 0;color:#64748b;width:140px">{k}</td><td style="padding:6px 0;font-weight:600">{escape(v)}</td></tr>'
+    return (
+        '<table role="presentation" width="100%" style="background:#f8fafc;padding:24px"><tr><td align="center">'
+        '<table role="presentation" width="520" style="background:#ffffff;border-radius:12px;padding:28px;font-family:Arial,sans-serif;color:#0f172a">'
+        f'<tr><td><h2 style="margin:0 0 8px">{escape(COMPANY_NAME)} — Yeni cihazdan giriş</h2>'
+        f'<p style="margin:0 0 16px;color:#475569">Merhaba {escape(owner_name)}, {who} daha önce görülmemiş bir cihazdan giriş yapıldı.</p>'
+        f'<table role="presentation" width="100%" style="border-collapse:collapse;font-size:14px">'
+        f'{row("Kullanıcı", subject_name)}{row("Tarih / Saat", when)}{row("Tarayıcı", browser)}{row("Sistem", os_)}{row("IP adresi", ip)}</table>'
+        f'<p style="margin:16px 0 0;color:#b91c1c;font-size:13px">{tail}</p>'
+        '</td></tr></table></td></tr></table>'
+    )
+
+
+async def _send_new_device_emails(user: dict, browser: str, os_: str, ip: str) -> None:
+    when = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M") + " (TSİ)"
+    targets = [(user, False)]
+    if user.get("role") != "admin":
+        targets += [(a, True) for a in await db.users.find({"role": "admin"}, {"_id": 0}).to_list(10)]
+    for u, for_admin in targets:
+        try:
+            await send_email(to=u.get("notification_email") or u["email"], subject=f"{COMPANY_NAME}: yeni cihazdan giriş — {user['name']}",
+                             html=_render_new_device_email(u["name"], user["name"], browser, os_, ip, when, for_admin))
+        except Exception as e:
+            logger.error(f"Yeni cihaz e-postası gönderilemedi ({u['email']}): {e}")
+
+
+async def _register_login_device(user: dict, device_id: Optional[str], request: Request) -> None:
+    if not device_id:
+        return
+    ua = request.headers.get("user-agent", "")
+    browser, os_ = _parse_ua(ua)
+    ip = _client_ip(request)
+    now = now_iso()
+    known = await db.user_devices.find_one({"user_id": user["id"], "device_id": device_id})
+    if known:
+        await db.user_devices.update_one({"_id": known["_id"]}, {"$set": {"last_seen": now, "last_login_at": now, "ip": ip, "browser": browser, "os": os_}})
+        return
+    first_ever = await db.user_devices.count_documents({"user_id": user["id"]}) == 0
+    await db.user_devices.insert_one({"id": str(uuid.uuid4()), "user_id": user["id"], "device_id": device_id, "browser": browser, "os": os_,
+                                      "ip": ip, "user_agent": ua[:300], "first_seen": now, "last_seen": now, "last_login_at": now})
+    if not first_ever:
+        asyncio.create_task(_send_new_device_emails(user, browser, os_, ip))
+
+
 @api_router.post("/auth/login")
-async def login(data: LoginIn):
+async def login(data: LoginIn, request: Request):
     email = data.email.lower().strip()
     now = datetime.now(timezone.utc)
     att = await db.login_attempts.find_one({"email": email}, {"_id": 0})
@@ -261,7 +344,8 @@ async def login(data: LoginIn):
             raise HTTPException(status_code=429, detail=f"{MAX_LOGIN_FAILS} hatalı deneme yapıldı. Hesap {LOCKOUT_MINUTES} dakika kilitlendi.")
         raise HTTPException(status_code=401, detail="E-posta veya şifre hatalı")
     await db.login_attempts.delete_one({"email": email})
-    token = create_token(user["id"], user["email"], user.get("token_version", 0))
+    await _register_login_device(user, data.device_id, request)
+    token = create_token(user["id"], user["email"], user.get("token_version", 0), data.device_id)
     await log_activity(user, "login", "auth", f"{user['name']} giriş yaptı")
     return {"token": token, "user": _public_user(user)}
 
@@ -388,6 +472,57 @@ async def change_password(data: ChangePasswordIn, user: dict = Depends(get_curre
     return {"ok": True, "token": create_token(updated["id"], updated["email"], updated.get("token_version", 0))}
 
 
+class DeviceTouchIn(BaseModel):
+    device_id: str
+
+
+@api_router.post("/auth/device/touch")
+async def device_touch(data: DeviceTouchIn, request: Request, user: dict = Depends(get_current_user)):
+    """Zaten açık oturumdaki cihazı sessizce tanınan cihazlara ekler (e-posta göndermez)."""
+    if not await db.user_devices.find_one({"user_id": user["id"], "device_id": data.device_id}):
+        browser, os_ = _parse_ua(request.headers.get("user-agent", ""))
+        await db.user_devices.insert_one({"id": str(uuid.uuid4()), "user_id": user["id"], "device_id": data.device_id, "browser": browser,
+                                          "os": os_, "ip": _client_ip(request), "user_agent": request.headers.get("user-agent", "")[:300],
+                                          "first_seen": now_iso(), "last_seen": now_iso(), "last_login_at": None})
+    return {"ok": True}
+
+
+@api_router.get("/auth/devices")
+async def list_devices(user: dict = Depends(get_current_user)):
+    docs = await db.user_devices.find({"user_id": user["id"]}, {"_id": 0, "user_agent": 0}).sort("last_seen", -1).to_list(100)
+    for d in docs:
+        d["current"] = d["device_id"] == user.get("_device_id")
+        d.pop("device_id", None)
+    return docs
+
+
+@api_router.delete("/auth/devices/{device_row_id}")
+async def remove_device(device_row_id: str, user: dict = Depends(get_current_user)):
+    res = await db.user_devices.delete_one({"id": device_row_id, "user_id": user["id"]})
+    if not res.deleted_count:
+        raise HTTPException(404, "Cihaz bulunamadı")
+    return {"ok": True}
+
+
+@api_router.post("/auth/logout-all")
+async def logout_all(user: dict = Depends(get_current_user)):
+    await db.users.update_one({"id": user["id"]}, {"$inc": {"token_version": 1}})
+    await log_activity(user, "logout", "auth", f"{user['name']} tüm cihazlardan çıkış yaptı")
+    return {"ok": True}
+
+
+@api_router.post("/admin/users/{user_id}/logout")
+async def admin_force_logout(user_id: str, admin: dict = Depends(require_admin)):
+    if user_id == admin["id"]:
+        raise HTTPException(400, "Kendi oturumunuz için Ayarlar > Tanınan Cihazlar > Tüm cihazlardan çıkış'ı kullanın")
+    target = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Kullanıcı bulunamadı")
+    await db.users.update_one({"id": user_id}, {"$inc": {"token_version": 1}})
+    await log_activity(admin, "logout", "Kullanıcılar", f"{target['name']} kullanıcısının tüm oturumları kapatıldı")
+    return {"ok": True}
+
+
 class AdminUserUpdateIn(BaseModel):
     name: str
     email: EmailStr
@@ -397,7 +532,12 @@ class AdminUserUpdateIn(BaseModel):
 @api_router.get("/admin/users")
 async def admin_list_users(admin: dict = Depends(require_admin)):
     docs = await db.users.find({}, {"_id": 0, "password_hash": 0}).sort("user_key", 1).to_list(50)
-    return [{**_public_user(d), "user_key": d.get("user_key"), "password_changed_at": d.get("password_changed_at")} for d in docs]
+    out = []
+    for d in docs:
+        devs = await db.user_devices.find({"user_id": d["id"]}, {"_id": 0, "browser": 1, "os": 1, "last_seen": 1}).sort("last_seen", -1).to_list(20)
+        out.append({**_public_user(d), "user_key": d.get("user_key"), "password_changed_at": d.get("password_changed_at"),
+                    "last_active_at": d.get("last_active_at"), "device_count": len(devs), "last_device": devs[0] if devs else None})
+    return out
 
 
 @api_router.put("/admin/users/{user_id}")
@@ -3365,6 +3505,7 @@ async def startup_event():
 
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     await db.login_attempts.create_index("email", unique=True)
+    await db.user_devices.create_index([("user_id", 1), ("device_id", 1)], unique=True)
 
     # Sadece eksik kullanıcıları oluştur; mevcut bilgiler (uygulamadan değiştirilmiş e-posta/şifre) ezilmez
     for u in seed_users:

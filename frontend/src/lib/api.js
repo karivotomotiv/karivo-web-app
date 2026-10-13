@@ -7,7 +7,17 @@ export const api = axios.create({
   baseURL: API,
 });
 
+export const getDeviceId = () => {
+  let id = localStorage.getItem("ks_device");
+  if (!id) {
+    id = window.crypto?.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem("ks_device", id);
+  }
+  return id;
+};
+
 api.interceptors.request.use((config) => {
+  config.headers["X-Device-Id"] = getDeviceId();
   const token = localStorage.getItem("ks_token");
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;

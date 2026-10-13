@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { ChangePassword } from "@/components/settings/ChangePassword";
 import { UserManagement } from "@/components/settings/UserManagement";
+import { Devices } from "@/components/settings/Devices";
 
 export default function SettingsDialog({ open, onOpenChange }) {
   const [settings, setSettings] = useState(null);
@@ -60,6 +61,7 @@ export default function SettingsDialog({ open, onOpenChange }) {
 
         {user?.role === "admin" && open && <UserManagement meId={user.id} />}
         {open && <ChangePassword />}
+        {open && <Devices />}
 
         <div className="text-sm font-bold text-slate-900 pt-2">Bildirim Ayarları</div>
         <Alert className="border-sky-300 bg-sky-50">
