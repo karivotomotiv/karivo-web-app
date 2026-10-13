@@ -58,3 +58,8 @@ Tüm UI ve iletişim **Türkçe**.
 ## Known Limitations
 - Whisper STT headless ortamda test edilemiyor (getUserMedia yok); sadece buton varlığı doğrulandı.
 - CORS `*` — preview same-origin ingress üzerinden çalışıyor.
+
+## 2026-06 — İşlem Günlüğü Silme (Admin)
+- POST /api/activity-logs/delete {mode: ids|all|range, ids, start, end(ISO)} — sadece admin (Özkan); silme kayıt bırakmaz.
+- ActivityLog.jsx: satır çöp ikonu, kutucuk seçimi + "Listelenen tümünü seç", Seçilenleri Sil, Tümünü Sil, tarih aralığı silme; hepsi onay penceresiyle.
+- Bekleyen: Dashboard "Cari Alacaklar" senkron hatası (kullanıcı şimdilik dokunma dedi), AI fatura okuma + onay ekranı.

@@ -2529,6 +2529,35 @@ async def list_logs(limit: int = 500, user: dict = Depends(get_current_user)):
     docs = await db.activity_logs.find({}, {"_id": 0}).sort("timestamp", -1).to_list(limit)
     return docs
 
+
+class LogDeleteRequest(BaseModel):
+    mode: Literal["ids", "all", "range"]
+    ids: List[str] = []
+    start: Optional[str] = None
+    end: Optional[str] = None
+
+
+@api_router.post("/activity-logs/delete")
+async def delete_logs(body: LogDeleteRequest, user: dict = Depends(require_admin)):
+    if body.mode == "ids":
+        if not body.ids:
+            raise HTTPException(status_code=400, detail="Silinecek kayıt seçilmedi")
+        q = {"id": {"$in": body.ids}}
+    elif body.mode == "all":
+        q = {}
+    else:
+        if not body.start and not body.end:
+            raise HTTPException(status_code=400, detail="Tarih aralığı belirtilmedi")
+        def _utc(s: str) -> str:
+            return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
+        q = {"timestamp": {}}
+        if body.start:
+            q["timestamp"]["$gte"] = _utc(body.start)
+        if body.end:
+            q["timestamp"]["$lt"] = _utc(body.end)
+    res = await db.activity_logs.delete_many(q)
+    return {"deleted": res.deleted_count}
+
 # ---- Dashboard v2: dönem özeti, stok, cari alacak, aylık rapor ----
 DEFAULT_CRITICAL_STOCK = 4.0
 
