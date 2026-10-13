@@ -3665,7 +3665,7 @@ async def block_ip_middleware(request: Request, call_next):
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=[o.strip() for o in os.environ['CORS_ORIGINS'].split(',') if o.strip()],
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -63,3 +63,4 @@ Tüm UI ve iletişim **Türkçe**.
 - POST /api/activity-logs/delete {mode: ids|all|range, ids, start, end(ISO)} — sadece admin (Özkan); silme kayıt bırakmaz.
 - ActivityLog.jsx: satır çöp ikonu, kutucuk seçimi + "Listelenen tümünü seç", Seçilenleri Sil, Tümünü Sil, tarih aralığı silme; hepsi onay penceresiyle.
 - Bekleyen: Dashboard "Cari Alacaklar" senkron hatası (kullanıcı şimdilik dokunma dedi), AI fatura okuma + onay ekranı.
+- 2026-06: CORS_ORIGINS sadece önizleme adresine kısıtlandı (server.py'de '*' varsayılanı kaldırıldı). Yayına alınınca canlı adres CORS_ORIGINS'e virgülle eklenmeli.
