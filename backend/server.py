@@ -344,6 +344,55 @@ async def admin_login_history(user_id: str, admin: dict = Depends(require_admin)
     return await db.login_history.find({"user_id": user_id}, {"_id": 0}).sort("at", -1).to_list(LOGIN_HISTORY_KEEP)
 
 
+SUSPICIOUS_FAILS = 3
+ALERT_THROTTLE_MINUTES = 15
+
+
+def _render_security_alert_email(owner_name: str, subject_name: str, email: str, kind: str, fails: int,
+                                 browser: str, os_: str, ip: str, when: str, for_admin: bool) -> str:
+    title = "Hesap kilitlendi" if kind == "locked" else "Şüpheli giriş denemesi"
+    who = f"{escape(subject_name)} hesabına" if for_admin else "Hesabınıza"
+    body = (f"{who} art arda {fails} hatalı giriş denemesi yapıldı ve hesap {LOCKOUT_MINUTES} dakika kilitlendi."
+            if kind == "locked" else f"{who} art arda {fails} hatalı giriş denemesi yapıldı.")
+    tail = ("Denemeler size ait değilse şifrenizi değiştirin; tanımadığınız bir IP ise yöneticiye bildirin."
+            if not for_admin else "Denemeler beklenmiyorsa Ayarlar &gt; Kullanıcı Yönetimi bölümünden giriş geçmişini inceleyebilir, oturumları kapatıp şifreyi değiştirebilirsiniz.")
+    row = lambda k, v: f'<tr><td style="padding:6px 0;color:#64748b;width:140px">{k}</td><td style="padding:6px 0;font-weight:600">{escape(v)}</td></tr>'
+    return (
+        '<table role="presentation" width="100%" style="background:#f8fafc;padding:24px"><tr><td align="center">'
+        '<table role="presentation" width="520" style="background:#ffffff;border-radius:12px;padding:28px;font-family:Arial,sans-serif;color:#0f172a">'
+        f'<tr><td><h2 style="margin:0 0 8px;color:#b91c1c">{escape(COMPANY_NAME)} — {title}</h2>'
+        f'<p style="margin:0 0 16px;color:#475569">Merhaba {escape(owner_name)}, {body}</p>'
+        f'<table role="presentation" width="100%" style="border-collapse:collapse;font-size:14px">'
+        f'{row("Hesap", f"{subject_name} ({email})")}{row("Tarih / Saat", when)}{row("Deneme sayısı", str(fails))}'
+        f'{row("Tarayıcı", browser)}{row("Sistem", os_)}{row("IP adresi", ip)}</table>'
+        f'<p style="margin:16px 0 0;color:#b91c1c;font-size:13px">{tail}</p>'
+        '</td></tr></table></td></tr></table>'
+    )
+
+
+async def _send_security_alert(user: dict, kind: str, fails: int, browser: str, os_: str, ip: str) -> None:
+    when = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M") + " (TSİ)"
+    subj = f"{COMPANY_NAME}: {'hesap kilitlendi' if kind == 'locked' else 'şüpheli giriş denemesi'} — {user['name']}"
+    targets = [(user, False)] + [(a, True) for a in await db.users.find({"role": "admin", "id": {"$ne": user["id"]}}, {"_id": 0}).to_list(10)]
+    for u, for_admin in targets:
+        try:
+            await send_email(to=u.get("notification_email") or u["email"], subject=subj,
+                             html=_render_security_alert_email(u["name"], user["name"], user["email"], kind, fails, browser, os_, ip, when, for_admin))
+        except Exception as e:
+            logger.error(f"Güvenlik uyarısı gönderilemedi ({u['email']}): {e}")
+
+
+async def _maybe_security_alert(user: dict, kind: str, fails: int, request: Request) -> None:
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(minutes=ALERT_THROTTLE_MINUTES)).isoformat()
+    if await db.security_alerts.find_one({"user_id": user["id"], "kind": kind, "sent_at": {"$gte": since}}):
+        return
+    await db.security_alerts.insert_one({"id": str(uuid.uuid4()), "user_id": user["id"], "kind": kind, "fails": fails,
+                                         "ip": _client_ip(request), "sent_at": now.isoformat()})
+    browser, os_ = _parse_ua(request.headers.get("user-agent", ""))
+    asyncio.create_task(_send_security_alert(user, kind, fails, browser, os_, _client_ip(request)))
+
+
 @api_router.post("/auth/login")
 async def login(data: LoginIn, request: Request):
     email = data.email.lower().strip()
@@ -364,6 +413,10 @@ async def login(data: LoginIn, request: Request):
         await db.login_attempts.replace_one({"email": email}, upd, upsert=True)
         if user:
             await _record_login(user, request, False, "wrong_password_locked" if fails >= MAX_LOGIN_FAILS else "wrong_password")
+            if fails >= MAX_LOGIN_FAILS:
+                await _maybe_security_alert(user, "locked", fails, request)
+            elif fails == SUSPICIOUS_FAILS:
+                await _maybe_security_alert(user, "suspicious", fails, request)
         if fails >= MAX_LOGIN_FAILS:
             raise HTTPException(status_code=429, detail=f"{MAX_LOGIN_FAILS} hatalı deneme yapıldı. Hesap {LOCKOUT_MINUTES} dakika kilitlendi.")
         raise HTTPException(status_code=401, detail="E-posta veya şifre hatalı")
@@ -3532,6 +3585,7 @@ async def startup_event():
     await db.login_attempts.create_index("email", unique=True)
     await db.user_devices.create_index([("user_id", 1), ("device_id", 1)], unique=True)
     await db.login_history.create_index([("user_id", 1), ("at", -1)])
+    await db.security_alerts.create_index([("user_id", 1), ("kind", 1), ("sent_at", -1)])
 
     # Sadece eksik kullanıcıları oluştur; mevcut bilgiler (uygulamadan değiştirilmiş e-posta/şifre) ezilmez
     for u in seed_users:
