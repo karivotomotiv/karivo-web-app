@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal
 
+from fastapi.responses import JSONResponse
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Request, BackgroundTasks, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
@@ -272,9 +273,16 @@ def _parse_ua(ua: str) -> tuple:
     return browser, os_
 
 
+TRUSTED_PROXY_HOPS = int(os.environ["TRUSTED_PROXY_HOPS"])
+
+
 def _client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for", "")
-    return (fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "")) or "bilinmiyor"
+    """Gerçek istemci IP'si: X-Forwarded-For zincirinde güvenilir proxy'lerden (sondan TRUSTED_PROXY_HOPS adet) önceki adres.
+    İstemcinin eklediği sahte değerler zincirin başında kalır ve yok sayılır."""
+    parts = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+    if parts:
+        return parts[max(0, len(parts) - 1 - TRUSTED_PROXY_HOPS)]
+    return (request.client.host if request.client else "") or "bilinmiyor"
 
 
 def _render_new_device_email(owner_name: str, subject_name: str, browser: str, os_: str, ip: str, when: str, for_admin: bool) -> str:
@@ -344,6 +352,77 @@ async def admin_login_history(user_id: str, admin: dict = Depends(require_admin)
     return await db.login_history.find({"user_id": user_id}, {"_id": 0}).sort("at", -1).to_list(LOGIN_HISTORY_KEEP)
 
 
+BLOCKED_IPS: set = set()
+
+
+async def _reload_blocked_ips() -> None:
+    BLOCKED_IPS.clear()
+    BLOCKED_IPS.update(d["ip"] for d in await db.blocked_ips.find({}, {"_id": 0, "ip": 1}).to_list(10000))
+
+
+async def _record_failed_ip(email: str, request: Request) -> None:
+    browser, os_ = _parse_ua(request.headers.get("user-agent", ""))
+    now = datetime.now(timezone.utc)
+    await db.failed_logins.insert_one({"ip": _client_ip(request), "email": email, "browser": browser, "os": os_,
+                                       "at": now.isoformat(), "at_dt": now})
+
+
+class BlockIpIn(BaseModel):
+    ip: str
+    note: Optional[str] = ""
+
+
+@api_router.get("/admin/security/suspicious-ips")
+async def suspicious_ips(request: Request, admin: dict = Depends(require_admin)):
+    since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    since30 = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    rows: dict = {}
+    for f in await db.failed_logins.find({"at": {"$gte": since}}, {"_id": 0}).sort("at", -1).to_list(20000):
+        r = rows.setdefault(f["ip"], {"ip": f["ip"], "fail_count": 0, "last_at": f["at"], "emails": set(), "agents": set()})
+        r["fail_count"] += 1
+        r["emails"].add(f["email"])
+        r["agents"].add(f"{f['browser']} · {f['os']}")
+    users = {u["id"]: u["name"] for u in await db.users.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(50)}
+    out = []
+    for r in sorted(rows.values(), key=lambda x: x["fail_count"], reverse=True):
+        ok = await db.login_history.distinct("user_id", {"ip": r["ip"], "success": True, "at": {"$gte": since30}})
+        out.append({**r, "emails": sorted(r["emails"]), "agents": sorted(r["agents"]), "blocked": r["ip"] in BLOCKED_IPS,
+                    "recent_users": [users[i] for i in ok if i in users]})
+    return {"current_ip": _client_ip(request), "items": out}
+
+
+@api_router.get("/admin/security/blocked-ips")
+async def list_blocked_ips(admin: dict = Depends(require_admin)):
+    return await db.blocked_ips.find({}, {"_id": 0}).sort("blocked_at", -1).to_list(10000)
+
+
+@api_router.post("/admin/security/blocked-ips")
+async def block_ip(data: BlockIpIn, request: Request, admin: dict = Depends(require_admin)):
+    ip = data.ip.strip()
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        raise HTTPException(400, "Geçersiz IP adresi")
+    if ip == _client_ip(request):
+        raise HTTPException(400, "Şu an kullandığınız IP adresini engelleyemezsiniz")
+    if await db.blocked_ips.find_one({"ip": ip}):
+        raise HTTPException(400, "Bu IP zaten engelli")
+    await db.blocked_ips.insert_one({"ip": ip, "note": (data.note or "").strip(), "blocked_by": admin["name"], "blocked_at": now_iso()})
+    await _reload_blocked_ips()
+    await log_activity(admin, "create", "Güvenlik", f"IP engellendi: {ip}")
+    return {"ok": True}
+
+
+@api_router.delete("/admin/security/blocked-ips/{ip}")
+async def unblock_ip(ip: str, admin: dict = Depends(require_admin)):
+    res = await db.blocked_ips.delete_one({"ip": ip})
+    if not res.deleted_count:
+        raise HTTPException(404, "Bu IP engelli değil")
+    await _reload_blocked_ips()
+    await log_activity(admin, "delete", "Güvenlik", f"IP engeli kaldırıldı: {ip}")
+    return {"ok": True}
+
+
 SUSPICIOUS_FAILS = 3
 ALERT_THROTTLE_MINUTES = 15
 
@@ -400,6 +479,7 @@ async def login(data: LoginIn, request: Request):
     att = await db.login_attempts.find_one({"email": email}, {"_id": 0})
     if att and att.get("locked_until") and datetime.fromisoformat(att["locked_until"]) > now:
         mins = max(1, int((datetime.fromisoformat(att["locked_until"]) - now).total_seconds() // 60) + 1)
+        await _record_failed_ip(email, request)
         locked_user = await db.users.find_one({"email": email}, {"_id": 0, "id": 1})
         if locked_user:
             await _record_login(locked_user, request, False, "locked")
@@ -411,6 +491,7 @@ async def login(data: LoginIn, request: Request):
         if fails >= MAX_LOGIN_FAILS:
             upd = {"email": email, "fails": 0, "locked_until": (now + timedelta(minutes=LOCKOUT_MINUTES)).isoformat(), "updated_at": now.isoformat()}
         await db.login_attempts.replace_one({"email": email}, upd, upsert=True)
+        await _record_failed_ip(email, request)
         if user:
             await _record_login(user, request, False, "wrong_password_locked" if fails >= MAX_LOGIN_FAILS else "wrong_password")
             if fails >= MAX_LOGIN_FAILS:
@@ -3545,6 +3626,13 @@ async def confirm_tire_import(data: TireImportConfirmIn, user: dict = Depends(ge
 # -----------------------------
 app.include_router(api_router)
 
+
+@app.middleware("http")
+async def block_ip_middleware(request: Request, call_next):
+    if BLOCKED_IPS and request.url.path.startswith("/api") and _client_ip(request) in BLOCKED_IPS:
+        return JSONResponse(status_code=403, content={"detail": "Bu IP adresinden erişim engellendi. Yönetici ile iletişime geçin."})
+    return await call_next(request)
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -3586,6 +3674,10 @@ async def startup_event():
     await db.user_devices.create_index([("user_id", 1), ("device_id", 1)], unique=True)
     await db.login_history.create_index([("user_id", 1), ("at", -1)])
     await db.security_alerts.create_index([("user_id", 1), ("kind", 1), ("sent_at", -1)])
+    await db.failed_logins.create_index("at_dt", expireAfterSeconds=30 * 24 * 3600)
+    await db.failed_logins.create_index("ip")
+    await db.blocked_ips.create_index("ip", unique=True)
+    await _reload_blocked_ips()
 
     # Sadece eksik kullanıcıları oluştur; mevcut bilgiler (uygulamadan değiştirilmiş e-posta/şifre) ezilmez
     for u in seed_users:
@@ -3605,3 +3697,4 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+

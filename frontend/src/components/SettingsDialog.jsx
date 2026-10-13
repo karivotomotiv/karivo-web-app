@@ -11,6 +11,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { ChangePassword } from "@/components/settings/ChangePassword";
 import { UserManagement } from "@/components/settings/UserManagement";
 import { Devices } from "@/components/settings/Devices";
+import { IpSecurity } from "@/components/settings/IpSecurity";
 
 export default function SettingsDialog({ open, onOpenChange }) {
   const [settings, setSettings] = useState(null);
@@ -60,6 +61,7 @@ export default function SettingsDialog({ open, onOpenChange }) {
         </DialogHeader>
 
         {user?.role === "admin" && open && <UserManagement meId={user.id} />}
+        {user?.role === "admin" && open && <IpSecurity />}
         {open && <ChangePassword />}
         {open && <Devices />}
 
