@@ -64,3 +64,7 @@ Tüm UI ve iletişim **Türkçe**.
 - ActivityLog.jsx: satır çöp ikonu, kutucuk seçimi + "Listelenen tümünü seç", Seçilenleri Sil, Tümünü Sil, tarih aralığı silme; hepsi onay penceresiyle.
 - Bekleyen: Dashboard "Cari Alacaklar" senkron hatası (kullanıcı şimdilik dokunma dedi), AI fatura okuma + onay ekranı.
 - 2026-06: CORS_ORIGINS sadece önizleme adresine kısıtlandı (server.py'de '*' varsayılanı kaldırıldı). Yayına alınınca canlı adres CORS_ORIGINS'e virgülle eklenmeli.
+- 2026-06: IP taklidi düzeltildi — _client_ip XFF'yi sağdan okur, son kaydı (LB) ve Cloudflare/iç ağ IP'lerini atlar (TRUSTED_PROXY_HOPS artık kullanılmıyor). Gerçek zincir: client, cloudflare, google-LB.
+- 2026-06: Akıllı kilitleme — hesap kilidi kaldırıldı; login_throttle koleksiyonu: "dev:ip|device" anahtarı her hatada 2^n sn (maks 900) bekleme, "ip:ip" anahtarı 10 hatadan sonra devreye girer. Uyarı e-postaları 3 ve 5 hatada aynen sürüyor (e-posta sayacı login_attempts).
+- 2026-06: İşlem Günlüğü Excel dışa aktarma — POST /api/activity-logs/export (ids|all|range), "Excel'e Aktar" butonu + silme onayında "Önce Excel olarak indir". Test: iteration_17 %100.
+- Cari Alacaklar: neden bulundu ("Borç" butonu = bizim borcumuz, dashboard sadece "Alacak" topluyor); kullanıcı "elleme" dedi.
