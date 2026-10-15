@@ -1244,6 +1244,108 @@ async def list_cari_tx(cari_id: str, user: dict = Depends(get_current_user)):
     return await db.cari_transactions.find({"cari_id": cari_id}, {"_id": 0}).sort("date", -1).to_list(5000)
 
 
+_TX_SIGN = {"alacak": 1, "odeme": -1, "borc": -1}
+_TX_LABEL = {"alacak": "Alacak", "odeme": "Gelen Ödeme", "borc": "Borç"}
+
+
+def _tl(v: float) -> str:
+    s = f"{abs(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"{'-' if v < -0.005 else ''}{s} TL"
+
+
+def _dmy(d: str) -> str:
+    try:
+        return datetime.strptime(d[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
+    except ValueError:
+        return d
+
+
+def _build_statement_pdf(cari: dict, txs: list, opening: float, start: Optional[str], end: Optional[str]) -> bytes:
+    from fpdf import FPDF
+    pdf = FPDF(format="A4")
+    pdf.set_auto_page_break(True, margin=15)
+    fdir = ROOT_DIR / "fonts"
+    pdf.add_font("LS", "", str(fdir / "LiberationSans-Regular.ttf"))
+    pdf.add_font("LS", "B", str(fdir / "LiberationSans-Bold.ttf"))
+    pdf.add_page()
+    pdf.set_font("LS", "B", 18)
+    pdf.cell(0, 10, COMPANY_NAME, new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("LS", "", 11)
+    pdf.set_text_color(100, 116, 139)
+    pdf.cell(0, 6, "Cari Hesap Ekstresi", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
+    pdf.set_text_color(15, 23, 42)
+    pdf.set_font("LS", "B", 12)
+    pdf.cell(0, 7, cari["name"], new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("LS", "", 9)
+    for v in (cari.get("phone"), cari.get("address")):
+        if v:
+            pdf.cell(0, 5, v, new_x="LMARGIN", new_y="NEXT")
+    period = f"{_dmy(start) if start else 'İlk kayıt'} – {_dmy(end) if end else 'Bugün'}"
+    printed = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M")
+    pdf.cell(0, 5, f"Dönem: {period}    Düzenlenme: {printed}", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
+    cols = [("Tarih", 22, "L"), ("Tür", 24, "L"), ("Açıklama", 54, "L"), ("Alacak", 23, "R"), ("Ödeme", 23, "R"), ("Borç", 23, "R"), ("Bakiye", 21, "R")]
+
+    def header():
+        pdf.set_font("LS", "B", 8)
+        pdf.set_fill_color(241, 245, 249)
+        for t, w, a in cols:
+            pdf.cell(w, 7, t, border="B", align=a, fill=True)
+        pdf.ln()
+        pdf.set_font("LS", "", 8)
+
+    def row(vals, bold=False):
+        if pdf.get_y() > 270:
+            pdf.add_page()
+            header()
+        pdf.set_font("LS", "B" if bold else "", 8)
+        for (_, w, a), v in zip(cols, vals):
+            pdf.cell(w, 6, v, border="B", align=a)
+        pdf.ln()
+
+    header()
+    bal = opening
+    if start:
+        row([_dmy(start), "Devreden", "Önceki dönemden devreden bakiye", "", "", "", _tl(bal).replace(" TL", "")], bold=True)
+    tot = {"alacak": 0.0, "odeme": 0.0, "borc": 0.0}
+    for t in txs:
+        amt = float(t["amount"])
+        tot[t["type"]] += amt
+        bal += _TX_SIGN[t["type"]] * amt
+        desc = (t.get("description") or "-")
+        desc = desc if pdf.get_string_width(desc) < 52 else desc[:40] + "…"
+        cells = {k: _tl(amt).replace(" TL", "") if t["type"] == k else "" for k in tot}
+        row([_dmy(t.get("date") or ""), _TX_LABEL[t["type"]], desc, cells["alacak"], cells["odeme"], cells["borc"], _tl(bal).replace(" TL", "")])
+    row(["", "TOPLAM", "", _tl(tot["alacak"]).replace(" TL", ""), _tl(tot["odeme"]).replace(" TL", ""), _tl(tot["borc"]).replace(" TL", ""), ""], bold=True)
+    pdf.ln(6)
+    pdf.set_font("LS", "B", 12)
+    pdf.cell(0, 8, f"Net Bakiye: {_tl(bal)}", new_x="LMARGIN", new_y="NEXT", align="R")
+    pdf.set_font("LS", "", 9)
+    pdf.set_text_color(100, 116, 139)
+    note = "Cari bize borçlu" if bal > 0.005 else ("Biz cariye borçluyuz" if bal < -0.005 else "Hesap kapalı")
+    pdf.cell(0, 5, note, new_x="LMARGIN", new_y="NEXT", align="R")
+    return bytes(pdf.output())
+
+
+@api_router.get("/cariler/{cari_id}/statement")
+async def cari_statement(cari_id: str, start: Optional[str] = None, end: Optional[str] = None, user: dict = Depends(get_current_user)):
+    from fastapi.responses import Response
+    cari = await db.cariler.find_one({"id": cari_id}, {"_id": 0})
+    if not cari:
+        raise HTTPException(404, "Cari bulunamadı")
+    start = _valid_date(start) if start else None
+    end = _valid_date(end) if end else None
+    if start and end and start > end:
+        raise HTTPException(400, "Başlangıç tarihi bitişten sonra olamaz")
+    all_txs = await db.cari_transactions.find({"cari_id": cari_id}, {"_id": 0}).sort([("date", 1), ("created_at", 1)]).to_list(10000)
+    opening = sum(_TX_SIGN.get(t["type"], 0) * float(t["amount"]) for t in all_txs if start and (t.get("date") or "") < start)
+    txs = [t for t in all_txs if t["type"] in _TX_SIGN and (not start or (t.get("date") or "") >= start) and (not end or (t.get("date") or "")[:10] <= end)]
+    pdf = await asyncio.to_thread(_build_statement_pdf, cari, txs, opening, start, end)
+    fname = f"ekstre-{re.sub(r'[^A-Za-z0-9]+', '-', cari['name']).strip('-').lower() or 'cari'}.pdf"
+    return Response(pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 @api_router.post("/cariler/{cari_id}/transactions", response_model=CariTxOut)
 async def create_cari_tx(cari_id: str, data: CariTxIn, user: dict = Depends(get_current_user)):
     cari = await db.cariler.find_one({"id": cari_id}, {"_id": 0, "name": 1})

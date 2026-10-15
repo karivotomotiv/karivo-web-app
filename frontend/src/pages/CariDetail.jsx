@@ -10,6 +10,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { ArrowLeft, Plus, Pencil, Trash2, TrendingUp, TrendingDown, Users, Phone, MapPin, HandCoins, Wallet } from "lucide-react";
 import { toast } from "sonner";
+import { StatementDialog } from "@/components/cari/StatementDialog";
 
 const TYPE_META = {
   alacak: { label: "Alacak", shortLabel: "ALACAK", color: "emerald", btnClass: "bg-emerald-600 hover:bg-emerald-700" },
@@ -129,6 +130,7 @@ export default function CariDetail() {
           </div>
         </div>
         <div className="flex gap-2 flex-wrap">
+          <StatementDialog cariId={id} cariName={cari.name} />
           <Button onClick={() => openNew("alacak")} className="bg-emerald-600 hover:bg-emerald-700 text-white" data-testid="cari-add-alacak">
             <Plus className="w-4 h-4 mr-2" /> Alacak Ekle
           </Button>
