@@ -2719,24 +2719,24 @@ async def _stock_snapshot() -> dict:
 
 
 async def _receivables_snapshot() -> dict:
-    """Müşterilerin açık alacak bakiyesi = alacak − gelen ödeme (sadece > 0 olanlar)."""
+    """Net açık alacak = alacak − gelen ödeme − borç (sadece > 0 olanlar)."""
     txs = await db.cari_transactions.find({}, {"_id": 0, "cari_id": 1, "type": 1, "amount": 1, "date": 1, "created_at": 1}).to_list(50000)
     cariler = {c["id"]: c["name"] for c in await db.cariler.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(10000)}
     agg: dict = {}
     for t in txs:
         if t.get("cari_id") not in cariler:
             continue
-        a = agg.setdefault(t["cari_id"], {"alacak": 0.0, "odeme": 0.0, "txs": []})
-        if t["type"] in ("alacak", "odeme"):
+        a = agg.setdefault(t["cari_id"], {"alacak": 0.0, "odeme": 0.0, "borc": 0.0, "txs": []})
+        if t["type"] in ("alacak", "odeme", "borc"):
             a[t["type"]] += float(t.get("amount", 0))
             a["txs"].append(t)
     rows = []
     for cid, a in agg.items():
-        rem = round(a["alacak"] - a["odeme"], 2)
+        rem = round(a["alacak"] - a["odeme"] - a["borc"], 2)
         if rem > 0.005:
-            oldest, days = _oldest_open_debt(a["txs"], a["odeme"])
+            oldest, days = _oldest_open_debt(a["txs"], a["odeme"] + a["borc"])
             rows.append({"id": cid, "name": cariler[cid], "total_alacak": _r2(a["alacak"]), "total_odeme": _r2(a["odeme"]),
-                         "remaining": rem, "oldest_open_date": oldest, "open_days": days})
+                         "total_borc": _r2(a["borc"]), "remaining": rem, "oldest_open_date": oldest, "open_days": days})
     rows.sort(key=lambda r: r["remaining"], reverse=True)
     return {"total": _r2(sum(r["remaining"] for r in rows)), "debtor_count": len(rows), "items": rows}
 

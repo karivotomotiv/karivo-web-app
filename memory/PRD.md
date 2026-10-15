@@ -68,3 +68,4 @@ Tüm UI ve iletişim **Türkçe**.
 - 2026-06: Akıllı kilitleme — hesap kilidi kaldırıldı; login_throttle koleksiyonu: "dev:ip|device" anahtarı her hatada 2^n sn (maks 900) bekleme, "ip:ip" anahtarı 10 hatadan sonra devreye girer. Uyarı e-postaları 3 ve 5 hatada aynen sürüyor (e-posta sayacı login_attempts).
 - 2026-06: İşlem Günlüğü Excel dışa aktarma — POST /api/activity-logs/export (ids|all|range), "Excel'e Aktar" butonu + silme onayında "Önce Excel olarak indir". Test: iteration_17 %100.
 - Cari Alacaklar: neden bulundu ("Borç" butonu = bizim borcumuz, dashboard sadece "Alacak" topluyor); kullanıcı "elleme" dedi.
+- 2026-06: Dashboard Cari Alacaklar net bakiyeye göre (alacak − ödeme − borç), eksi/0 bakiyeliler gizli. Test Oto 8.000 doğrulandı.

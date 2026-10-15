@@ -9,7 +9,7 @@ export const ReceivablesSummary = ({ r }) => {
     <Card className="border-slate-200 shadow-sm h-full" data-testid="receivables-summary">
       <CardHeader className="pb-3">
         <CardTitle className="text-base font-bold text-slate-900 flex items-center gap-2"><Users className="w-4 h-4" /> Cari Alacaklar</CardTitle>
-        <p className="text-[11px] text-slate-500 mt-0.5">Anlık açık bakiye (alacak − gelen ödeme)</p>
+        <p className="text-[11px] text-slate-500 mt-0.5">Anlık açık bakiye (alacak − gelen ödeme − borç)</p>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid grid-cols-2 gap-2">
