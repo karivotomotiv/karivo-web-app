@@ -224,7 +224,7 @@ export default function AmountList({ title, subtitle, endpoint, color = "emerald
       </Card>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent aria-describedby={undefined} className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{editing ? "Kayıt Düzenle" : "Yeni Kayıt"}</DialogTitle>
           </DialogHeader>

@@ -70,3 +70,5 @@ Tüm UI ve iletişim **Türkçe**.
 - Cari Alacaklar: neden bulundu ("Borç" butonu = bizim borcumuz, dashboard sadece "Alacak" topluyor); kullanıcı "elleme" dedi.
 - 2026-06: Dashboard Cari Alacaklar net bakiyeye göre (alacak − ödeme − borç), eksi/0 bakiyeliler gizli. Test Oto 8.000 doğrulandı.
 - 2026-06: Cari Ekstresi — GET /api/cariler/{id}/statement?start&end → PDF (fpdf2, fontlar backend/fonts/Liberation*). Devreden bakiye, yürüyen bakiye (alacak +, ödeme/borç −), toplamlar, net bakiye. UI: CariDetail 'Ekstre (PDF)' → components/cari/StatementDialog.jsx. Gönderim yok (kullanıcı tercihi).
+- 2026-06: Canlı adres: https://accounting-app-207.emergentapps.tr (önizleme ile AYRI veritabanı). X OTO (124.172 TL alacak) canlıya API ile eklendi.
+- 2026-06: Tüm window.confirm → uygulama içi askConfirm() (components/ConfirmHost.jsx, App.js'de mount). Telefon/in-app tarayıcılarda native diyalog engellenince silme çalışmıyordu. Cariler mobilde kart görünümü (components/cari/CariMobileList.jsx). Test: iteration_18 %100. Canlıya geçmesi için yeniden deploy gerekli.
