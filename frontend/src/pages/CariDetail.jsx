@@ -129,14 +129,14 @@ export default function CariDetail() {
           </div>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <Button onClick={() => openNew("alacak")} className="bg-emerald-600 hover:bg-emerald-700 text-white" title="Cari bize borçlandı (alacak)" data-testid="cari-add-alacak">
-            <Plus className="w-4 h-4 mr-2" /> Bize Borçlu
+          <Button onClick={() => openNew("alacak")} className="bg-emerald-600 hover:bg-emerald-700 text-white" data-testid="cari-add-alacak">
+            <Plus className="w-4 h-4 mr-2" /> Alacak Ekle
           </Button>
-          <Button onClick={() => openNew("borc")} className="bg-rose-600 hover:bg-rose-700 text-white" title="Biz cariye borçlandık (borç)" data-testid="cari-add-borc">
-            <Plus className="w-4 h-4 mr-2" /> Biz Borçluyuz
+          <Button onClick={() => openNew("borc")} className="bg-rose-600 hover:bg-rose-700 text-white" data-testid="cari-add-borc">
+            <Plus className="w-4 h-4 mr-2" /> Borç Ekle
           </Button>
-          <Button onClick={() => openNew("odeme")} className="bg-sky-600 hover:bg-sky-700 text-white" title="Cariden ödeme aldık" data-testid="cari-add-odeme">
-            <HandCoins className="w-4 h-4 mr-2" /> Ödeme Aldık
+          <Button onClick={() => openNew("odeme")} className="bg-sky-600 hover:bg-sky-700 text-white" data-testid="cari-add-odeme">
+            <HandCoins className="w-4 h-4 mr-2" /> Gelen Ödeme Gir
           </Button>
         </div>
       </div>
