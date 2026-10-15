@@ -5,7 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { History, Trash2 } from "lucide-react";
+import { History, Trash2, FileSpreadsheet } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { LogDeleteToolbar } from "@/components/logs/LogDeleteToolbar";
@@ -47,6 +48,18 @@ export default function ActivityLog() {
     } catch (e) { toast.error(extractError(e)); }
     setConfirm(null);
   };
+  const exportLogs = async (payload) => {
+    try {
+      const { data } = await api.post("/activity-logs/export", payload, { responseType: "blob" });
+      const url = URL.createObjectURL(data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `islem-gunlugu-${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      return true;
+    } catch (e) { toast.error("Excel dosyası oluşturulamadı"); return false; }
+  };
   const toggle = (id) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
 
   const users = [...new Set(logs.map((l) => l.user_name))].filter(Boolean);
@@ -71,6 +84,15 @@ export default function ActivityLog() {
           <h2 className="text-3xl font-extrabold tracking-tight text-slate-900">İşlem Günlüğü</h2>
           <p className="text-sm text-slate-600 mt-1">Her kullanıcının tüm hareketleri tarih ve saat ile birlikte burada görüntülenir.</p>
         </div>
+        <Button
+          variant="outline"
+          className="ml-auto"
+          disabled={filtered.length === 0}
+          onClick={() => exportLogs({ mode: "ids", ids: filtered.map((l) => l.id) })}
+          data-testid="log-export-btn"
+        >
+          <FileSpreadsheet className="w-4 h-4 mr-2 text-emerald-600" /> Excel'e Aktar ({filtered.length})
+        </Button>
       </div>
 
       <Card className="border-slate-200 shadow-sm">
@@ -132,7 +154,7 @@ export default function ActivityLog() {
           </div>
         </CardContent>
       </Card>
-      <ConfirmDeleteDialog confirm={confirm} onClose={() => setConfirm(null)} onConfirm={doDelete} />
+      <ConfirmDeleteDialog confirm={confirm} onClose={() => setConfirm(null)} onConfirm={doDelete} onExport={() => exportLogs(confirm.payload)} />
     </div>
   );
 }

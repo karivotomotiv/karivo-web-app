@@ -242,7 +242,6 @@ class TodoOut(BaseModel):
 # Auth routes
 # -----------------------------
 MAX_LOGIN_FAILS = 5
-LOCKOUT_MINUTES = 15
 RESET_CODE_MINUTES = 60
 MAX_RESET_CODE_ATTEMPTS = 5
 MIN_PASSWORD_LEN = 8
@@ -273,15 +272,29 @@ def _parse_ua(ua: str) -> tuple:
     return browser, os_
 
 
-TRUSTED_PROXY_HOPS = int(os.environ["TRUSTED_PROXY_HOPS"])
+_CF_NETS = [ipaddress.ip_network(n) for n in (
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18", "108.162.192.0/18",
+    "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22", "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32",
+    "2405:b500::/32", "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32")]
+
+
+def _is_trusted_proxy(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return addr.is_private or addr.is_loopback or any(addr in n for n in _CF_NETS)
 
 
 def _client_ip(request: Request) -> str:
-    """Gerçek istemci IP'si: X-Forwarded-For zincirinde güvenilir proxy'lerden (sondan TRUSTED_PROXY_HOPS adet) önceki adres.
-    İstemcinin eklediği sahte değerler zincirin başında kalır ve yok sayılır."""
+    # Sağdan sola: son kayıt yük dengeleyicinin kendisi; ardından Cloudflare/iç ağ adresleri atlanır. İstemcinin eklediği soldaki değerler asla seçilmez.
     parts = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
-    if parts:
-        return parts[max(0, len(parts) - 1 - TRUSTED_PROXY_HOPS)]
+    i = len(parts) - 2
+    while i > 0 and _is_trusted_proxy(parts[i]):
+        i -= 1
+    if i >= 0 and not _is_trusted_proxy(parts[i]):
+        return parts[i]
     return (request.client.host if request.client else "") or "bilinmiyor"
 
 
@@ -429,9 +442,9 @@ ALERT_THROTTLE_MINUTES = 15
 
 def _render_security_alert_email(owner_name: str, subject_name: str, email: str, kind: str, fails: int,
                                  browser: str, os_: str, ip: str, when: str, for_admin: bool) -> str:
-    title = "Hesap kilitlendi" if kind == "locked" else "Şüpheli giriş denemesi"
+    title = "Giriş denemeleri yavaşlatıldı" if kind == "locked" else "Şüpheli giriş denemesi"
     who = f"{escape(subject_name)} hesabına" if for_admin else "Hesabınıza"
-    body = (f"{who} art arda {fails} hatalı giriş denemesi yapıldı ve hesap {LOCKOUT_MINUTES} dakika kilitlendi."
+    body = (f"{who} art arda {fails} hatalı giriş denemesi yapıldı; deneme yapılan cihaz/IP için bekleme süresi uygulanıyor."
             if kind == "locked" else f"{who} art arda {fails} hatalı giriş denemesi yapıldı.")
     tail = ("Denemeler size ait değilse şifrenizi değiştirin; tanımadığınız bir IP ise yöneticiye bildirin."
             if not for_admin else "Denemeler beklenmiyorsa Ayarlar &gt; Kullanıcı Yönetimi bölümünden giriş geçmişini inceleyebilir, oturumları kapatıp şifreyi değiştirebilirsiniz.")
@@ -451,7 +464,7 @@ def _render_security_alert_email(owner_name: str, subject_name: str, email: str,
 
 async def _send_security_alert(user: dict, kind: str, fails: int, browser: str, os_: str, ip: str) -> None:
     when = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M") + " (TSİ)"
-    subj = f"{COMPANY_NAME}: {'hesap kilitlendi' if kind == 'locked' else 'şüpheli giriş denemesi'} — {user['name']}"
+    subj = f"{COMPANY_NAME}: {'giriş denemeleri yavaşlatıldı' if kind == 'locked' else 'şüpheli giriş denemesi'} — {user['name']}"
     targets = [(user, False)] + [(a, True) for a in await db.users.find({"role": "admin", "id": {"$ne": user["id"]}}, {"_id": 0}).to_list(10)]
     for u, for_admin in targets:
         try:
@@ -472,35 +485,67 @@ async def _maybe_security_alert(user: dict, kind: str, fails: int, request: Requ
     asyncio.create_task(_send_security_alert(user, kind, fails, browser, os_, _client_ip(request)))
 
 
+THROTTLE_MAX_SECONDS = 900
+IP_THROTTLE_FREE_FAILS = 10
+
+
+def _throttle_keys(request: Request, device_id: Optional[str]) -> list:
+    ip = _client_ip(request)
+    return [(f"dev:{ip}|{device_id or '-'}", 0), (f"ip:{ip}", IP_THROTTLE_FREE_FAILS)]
+
+
+async def _throttle_wait(keys: list, now: datetime) -> int:
+    docs = await db.login_throttle.find({"key": {"$in": [k for k, _ in keys]}}, {"_id": 0}).to_list(5)
+    return max([int((d["wait_until"] - now.replace(tzinfo=None)).total_seconds()) + 1 for d in docs
+                if d.get("wait_until") and d["wait_until"] > now.replace(tzinfo=None)] or [0])
+
+
+async def _throttle_fail(keys: list, now: datetime) -> int:
+    waits = []
+    for key, free in keys:
+        doc = await db.login_throttle.find_one_and_update({"key": key}, {"$inc": {"fails": 1}, "$set": {"updated_at": now}},
+                                                          upsert=True, return_document=True, projection={"_id": 0})
+        n = doc["fails"] - free
+        if n > 0:
+            wait = min(2 ** n, THROTTLE_MAX_SECONDS)
+            await db.login_throttle.update_one({"key": key}, {"$set": {"wait_until": now + timedelta(seconds=wait)}})
+            waits.append(wait)
+    return max(waits or [0])
+
+
+def _fmt_wait(sec: int) -> str:
+    return f"{sec} saniye" if sec < 60 else f"{(sec + 59) // 60} dakika"
+
+
 @api_router.post("/auth/login")
 async def login(data: LoginIn, request: Request):
     email = data.email.lower().strip()
     now = datetime.now(timezone.utc)
-    att = await db.login_attempts.find_one({"email": email}, {"_id": 0})
-    if att and att.get("locked_until") and datetime.fromisoformat(att["locked_until"]) > now:
-        mins = max(1, int((datetime.fromisoformat(att["locked_until"]) - now).total_seconds() // 60) + 1)
-        await _record_failed_ip(email, request)
-        locked_user = await db.users.find_one({"email": email}, {"_id": 0, "id": 1})
-        if locked_user:
-            await _record_login(locked_user, request, False, "locked")
-        raise HTTPException(status_code=429, detail=f"Çok fazla hatalı deneme. {mins} dakika sonra tekrar deneyin veya şifrenizi sıfırlayın.")
+    keys = _throttle_keys(request, data.device_id)
     user = await db.users.find_one({"email": email}, {"_id": 0})
+    wait = await _throttle_wait(keys, now)
+    if wait > 0:
+        await _record_failed_ip(email, request)
+        if user:
+            await _record_login(user, request, False, "throttled")
+        raise HTTPException(status_code=429, detail=f"Çok fazla hatalı deneme. {_fmt_wait(wait)} sonra tekrar deneyin.")
     if not user or not verify_password(data.password, user["password_hash"]):
-        fails = (att.get("fails", 0) if att and not att.get("locked_until") else 0) + 1
-        upd = {"email": email, "fails": fails, "updated_at": now.isoformat()}
-        if fails >= MAX_LOGIN_FAILS:
-            upd = {"email": email, "fails": 0, "locked_until": (now + timedelta(minutes=LOCKOUT_MINUTES)).isoformat(), "updated_at": now.isoformat()}
-        await db.login_attempts.replace_one({"email": email}, upd, upsert=True)
+        att = await db.login_attempts.find_one_and_update({"email": email}, {"$inc": {"fails": 1}, "$set": {"updated_at": now.isoformat()},
+                                                                             "$unset": {"locked_until": ""}},
+                                                          upsert=True, return_document=True, projection={"_id": 0})
+        fails = att["fails"]
+        wait = await _throttle_fail(keys, now)
         await _record_failed_ip(email, request)
         if user:
             await _record_login(user, request, False, "wrong_password_locked" if fails >= MAX_LOGIN_FAILS else "wrong_password")
-            if fails >= MAX_LOGIN_FAILS:
+            if fails == MAX_LOGIN_FAILS:
                 await _maybe_security_alert(user, "locked", fails, request)
             elif fails == SUSPICIOUS_FAILS:
                 await _maybe_security_alert(user, "suspicious", fails, request)
         if fails >= MAX_LOGIN_FAILS:
-            raise HTTPException(status_code=429, detail=f"{MAX_LOGIN_FAILS} hatalı deneme yapıldı. Hesap {LOCKOUT_MINUTES} dakika kilitlendi.")
-        raise HTTPException(status_code=401, detail="E-posta veya şifre hatalı")
+            await db.login_attempts.update_one({"email": email}, {"$set": {"fails": 0}})
+        raise HTTPException(status_code=401, detail="E-posta veya şifre hatalı" + (f". Yeni deneme için {_fmt_wait(wait)} bekleyin." if wait >= 4 else ""))
+    await db.login_throttle.delete_many({"key": {"$in": [k for k, _ in keys]}})
     await db.login_attempts.delete_one({"email": email})
     new_device = await _register_login_device(user, data.device_id, request)
     await _record_login(user, request, True, "ok", new_device)
@@ -2537,24 +2582,53 @@ class LogDeleteRequest(BaseModel):
     end: Optional[str] = None
 
 
-@api_router.post("/activity-logs/delete")
-async def delete_logs(body: LogDeleteRequest, user: dict = Depends(require_admin)):
+def _log_query(body: LogDeleteRequest) -> dict:
     if body.mode == "ids":
         if not body.ids:
-            raise HTTPException(status_code=400, detail="Silinecek kayıt seçilmedi")
-        q = {"id": {"$in": body.ids}}
-    elif body.mode == "all":
-        q = {}
-    else:
-        if not body.start and not body.end:
-            raise HTTPException(status_code=400, detail="Tarih aralığı belirtilmedi")
-        def _utc(s: str) -> str:
-            return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
-        q = {"timestamp": {}}
-        if body.start:
-            q["timestamp"]["$gte"] = _utc(body.start)
-        if body.end:
-            q["timestamp"]["$lt"] = _utc(body.end)
+            raise HTTPException(status_code=400, detail="Kayıt seçilmedi")
+        return {"id": {"$in": body.ids}}
+    if body.mode == "all":
+        return {}
+    if not body.start and not body.end:
+        raise HTTPException(status_code=400, detail="Tarih aralığı belirtilmedi")
+
+    def _utc(v: str) -> str:
+        return datetime.fromisoformat(v.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
+    q = {"timestamp": {}}
+    if body.start:
+        q["timestamp"]["$gte"] = _utc(body.start)
+    if body.end:
+        q["timestamp"]["$lt"] = _utc(body.end)
+    return q
+
+
+@api_router.post("/activity-logs/export")
+async def export_logs(body: LogDeleteRequest, user: dict = Depends(get_current_user)):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    from fastapi.responses import StreamingResponse
+    docs = await db.activity_logs.find(_log_query(body), {"_id": 0}).sort("timestamp", -1).to_list(50000)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "İşlem Günlüğü"
+    ws.append(["Tarih / Saat (TSİ)", "Kullanıcı", "İşlem", "Bölüm", "Detay"])
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for d in docs:
+        ts = datetime.fromisoformat(d["timestamp"]).astimezone(timezone(timedelta(hours=3))).strftime("%d.%m.%Y %H:%M:%S")
+        ws.append([ts, d.get("user_name", ""), d.get("action", ""), d.get("section", ""), d.get("details", "")])
+    for col, w in zip("ABCDE", (22, 16, 12, 16, 80)):
+        ws.column_dimensions[col].width = w
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": 'attachment; filename="islem-gunlugu.xlsx"'})
+
+
+@api_router.post("/activity-logs/delete")
+async def delete_logs(body: LogDeleteRequest, user: dict = Depends(require_admin)):
+    q = _log_query(body)
     res = await db.activity_logs.delete_many(q)
     return {"deleted": res.deleted_count}
 
@@ -3700,6 +3774,8 @@ async def startup_event():
 
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     await db.login_attempts.create_index("email", unique=True)
+    await db.login_throttle.create_index("key", unique=True)
+    await db.login_throttle.create_index("updated_at", expireAfterSeconds=24 * 3600)
     await db.user_devices.create_index([("user_id", 1), ("device_id", 1)], unique=True)
     await db.login_history.create_index([("user_id", 1), ("at", -1)])
     await db.security_alerts.create_index([("user_id", 1), ("kind", 1), ("sent_at", -1)])

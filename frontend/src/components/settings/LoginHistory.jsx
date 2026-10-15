@@ -6,8 +6,9 @@ import { Loader2 } from "lucide-react";
 const REASONS = {
   ok: null,
   wrong_password: "Yanlış şifre",
-  wrong_password_locked: "Yanlış şifre · hesap kilitlendi",
+  wrong_password_locked: "Yanlış şifre · 5+ ardışık hata",
   locked: "Kilitli hesaba deneme",
+  throttled: "Bekleme süresinde deneme",
 };
 
 export const LoginHistory = ({ userId }) => {
