@@ -11,6 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableFoo
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Plus, Trash2, ShoppingCart, Receipt, X, Check, AlertCircle, Pencil } from "lucide-react";
 import { toast } from "sonner";
+import { askConfirm } from "@/components/ConfirmHost";
 
 const PAYMENT_META = {
   nakit:    { label: "Nakit",   color: "bg-emerald-100 text-emerald-700 border-emerald-200" },
@@ -137,7 +138,7 @@ export default function Satislar() {
   };
 
   const deleteSale = async (sale) => {
-    if (!window.confirm(`Bu satışı kalıcı olarak silmek istiyor musunuz?\n\nStoklar geri eklenecek (stok hareketlerinde "iade" kaydı kalır), varsa gelir ve cari alacak kaydı silinecek.`)) return;
+    if (!(await askConfirm(`Bu satışı kalıcı olarak silmek istiyor musunuz?\n\nStoklar geri eklenecek (stok hareketlerinde "iade" kaydı kalır), varsa gelir ve cari alacak kaydı silinecek.`))) return;
     try {
       await api.delete(`/sales/${sale.id}`);
       toast.success("Satış silindi, stoklar geri eklendi");

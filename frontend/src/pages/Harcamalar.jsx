@@ -11,6 +11,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Plus, Pencil, Trash2, Wallet, Building, User, Users } from "lucide-react";
 import { toast } from "sonner";
+import { askConfirm } from "@/components/ConfirmHost";
 
 // Kategori etiketleri — user1 = Murat, user2 = Özkan (env'den gelen isimler)
 const CATS = [
@@ -78,7 +79,7 @@ export default function Harcamalar() {
   };
 
   const remove = async (id) => {
-    if (!window.confirm("Bu harcamayı silmek istiyor musunuz?")) return;
+    if (!(await askConfirm("Bu harcamayı silmek istiyor musunuz?"))) return;
     try { await api.delete(`/spendings/${id}`); toast.success("Silindi"); load(); }
     catch (e) { toast.error(extractError(e)); }
   };

@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
+import { ConfirmHost } from "@/components/ConfirmHost";
 import { AuthProvider } from "@/contexts/AuthContext";
 import Layout from "@/components/layout/Layout";
 import Login from "@/pages/Login";
@@ -23,6 +24,7 @@ export default function App() {
   return (
     <AuthProvider>
       <Toaster position="top-right" richColors />
+      <ConfirmHost />
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />

@@ -10,6 +10,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableFoo
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Plus, Pencil, Trash2, Users, Search, ChevronRight, UserPlus } from "lucide-react";
 import { toast } from "sonner";
+import { CariMobileList } from "@/components/cari/CariMobileList";
+import { askConfirm } from "@/components/ConfirmHost";
 
 const empty = { name: "", phone: "", address: "", note: "" };
 
@@ -63,7 +65,7 @@ export default function Cariler() {
 
   const remove = async (it, e) => {
     e?.stopPropagation();
-    if (!window.confirm(`"${it.name}" carisini ve tüm hareketlerini silmek istiyor musunuz?`)) return;
+    if (!(await askConfirm(`"${it.name}" carisini ve tüm hareketlerini silmek istiyor musunuz?`))) return;
     try { await api.delete(`/cariler/${it.id}`); toast.success("Cari silindi"); load(); }
     catch (e) { toast.error(extractError(e)); }
   };
@@ -74,7 +76,7 @@ export default function Cariler() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
         <div className="flex items-center gap-4">
           <div className="w-12 h-12 rounded-2xl bg-sky-100 text-sky-700 flex items-center justify-center">
             <Users className="w-6 h-6" />
@@ -105,6 +107,15 @@ export default function Cariler() {
           </div>
         </CardContent>
         <CardContent className="p-0">
+          <CariMobileList
+            items={filtered}
+            emptyText={items.length === 0 ? 'Henüz cari yok. "Yeni Cari" ile ekleyin.' : "Aramayla eşleşen cari yok."}
+            onOpen={(it) => nav(`/cariler/${it.id}`)}
+            onEdit={openEdit}
+            onDelete={(it) => remove(it)}
+            totalNet={totalNet}
+          />
+          <div className="hidden md:block">
           <Table>
             <TableHeader>
               <TableRow className="bg-slate-50">
@@ -187,6 +198,7 @@ export default function Cariler() {
               </TableFooter>
             )}
           </Table>
+          </div>
         </CardContent>
       </Card>
 

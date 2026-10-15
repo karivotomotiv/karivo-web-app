@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Users, Pencil, X, LogOut, History } from "lucide-react";
 import { LoginHistory } from "@/components/settings/LoginHistory";
 import { toast } from "sonner";
+import { askConfirm } from "@/components/ConfirmHost";
 
 const UserRow = ({ u, meId, onSaved }) => {
   const [edit, setEdit] = useState(false);
@@ -27,7 +28,7 @@ const UserRow = ({ u, meId, onSaved }) => {
   };
 
   const forceLogout = async () => {
-    if (!window.confirm(`${u.name} kullanıcısının tüm cihazlardaki oturumları şimdi kapatılsın mı?`)) return;
+    if (!(await askConfirm(`${u.name} kullanıcısının tüm cihazlardaki oturumları şimdi kapatılsın mı?`))) return;
     try { await api.post(`/admin/users/${u.id}/logout`); toast.success(`${u.name} sistemden çıkarıldı`); onSaved(); }
     catch (err) { toast.error(extractError(err)); }
   };

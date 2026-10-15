@@ -9,6 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Plus, Trash2, ListChecks, Pencil } from "lucide-react";
 import { toast } from "sonner";
+import { askConfirm } from "@/components/ConfirmHost";
 
 export default function Yapilacaklar() {
   const [items, setItems] = useState([]);
@@ -51,7 +52,7 @@ export default function Yapilacaklar() {
   };
 
   const remove = async (id) => {
-    if (!window.confirm("Bu görevi silmek istiyor musunuz?")) return;
+    if (!(await askConfirm("Bu görevi silmek istiyor musunuz?"))) return;
     try { await api.delete(`/todos/${id}`); toast.success("Silindi"); load(); }
     catch (e) { toast.error(extractError(e)); }
   };

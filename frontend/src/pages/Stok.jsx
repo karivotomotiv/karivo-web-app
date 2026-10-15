@@ -14,6 +14,7 @@ import { Plus, Pencil, Trash2, Package, Search, Upload, ArrowDown, ArrowUp, Spar
 import { DuplicatesDialog } from "@/components/stock/DuplicatesDialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
+import { askConfirm } from "@/components/ConfirmHost";
 
 const SEASON_META = {
   yaz: { label: "Yaz", color: "bg-amber-100 text-amber-700 border-amber-200" },
@@ -162,7 +163,7 @@ export default function Stok() {
   };
 
   const remove = async (it) => {
-    if (!window.confirm(`"${isOther(it) ? it.name : `${it.brand} ${it.size}`}" ürününü silmek istiyor musunuz?`)) return;
+    if (!(await askConfirm(`"${isOther(it) ? it.name : `${it.brand} ${it.size}`}" ürününü silmek istiyor musunuz?`))) return;
     try { await api.delete(`/tires/${it.id}`); toast.success("Silindi"); load(); }
     catch (e) { toast.error(extractError(e)); }
   };

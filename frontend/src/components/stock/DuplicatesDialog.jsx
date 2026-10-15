@@ -5,6 +5,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertTriangle, Crown, GitMerge, Loader2, Pencil } from "lucide-react";
 import { toast } from "sonner";
+import { askConfirm } from "@/components/ConfirmHost";
 
 const priceKey = (r) => `${r.buy_price}|${r.sell_price}|${r.kdv_rate}`;
 const defaultTarget = (g) => [...g].sort((a, b) => b.sale_count - a.sale_count || b.quantity - a.quantity || a.created_at.localeCompare(b.created_at))[0].id;
@@ -20,7 +21,7 @@ const GroupCard = ({ group, kind, idx, onMerged, onEditTarget }) => {
 
   const toggle = (id) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const merge = async () => {
-    if (!window.confirm(`${sources.length} ürün "${t.label}" içine birleştirilecek. Toplam adet ${total} olacak ve diğer kayıtlar silinecek. Onaylıyor musunuz?`)) return;
+    if (!(await askConfirm(`${sources.length} ürün "${t.label}" içine birleştirilecek. Toplam adet ${total} olacak ve diğer kayıtlar silinecek. Onaylıyor musunuz?`))) return;
     setBusy(true);
     try {
       await api.post("/tires/merge", { target_id: target, source_ids: sources.map((r) => r.id) });

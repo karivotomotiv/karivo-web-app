@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/contexts/AuthContext";
 import { MonitorSmartphone, Trash2, LogOut } from "lucide-react";
 import { toast } from "sonner";
+import { askConfirm } from "@/components/ConfirmHost";
 
 export const Devices = () => {
   const { logout } = useAuth();
@@ -13,11 +14,11 @@ export const Devices = () => {
   useEffect(() => { load(); }, []);
 
   const remove = async (d) => {
-    if (!window.confirm(`"${d.browser} · ${d.os}" tanınan cihazlardan kaldırılsın mı? Bu cihazdan bir sonraki girişte bildirim e-postası gönderilir.`)) return;
+    if (!(await askConfirm(`"${d.browser} · ${d.os}" tanınan cihazlardan kaldırılsın mı? Bu cihazdan bir sonraki girişte bildirim e-postası gönderilir.`))) return;
     try { await api.delete(`/auth/devices/${d.id}`); toast.success("Cihaz kaldırıldı"); load(); } catch (e) { toast.error(extractError(e)); }
   };
   const logoutAll = async () => {
-    if (!window.confirm("Bu cihaz dahil tüm cihazlardaki oturumlarınız kapatılacak. Devam edilsin mi?")) return;
+    if (!(await askConfirm("Bu cihaz dahil tüm cihazlardaki oturumlarınız kapatılacak. Devam edilsin mi?"))) return;
     try { await api.post("/auth/logout-all"); toast.success("Tüm cihazlardan çıkış yapıldı"); localStorage.removeItem("ks_token"); logout(); }
     catch (e) { toast.error(extractError(e)); }
   };

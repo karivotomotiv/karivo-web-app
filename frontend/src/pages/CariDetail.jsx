@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { ArrowLeft, Plus, Pencil, Trash2, TrendingUp, TrendingDown, Users, Phone, MapPin, HandCoins, Wallet } from "lucide-react";
 import { toast } from "sonner";
 import { StatementDialog } from "@/components/cari/StatementDialog";
+import { askConfirm } from "@/components/ConfirmHost";
 
 const TYPE_META = {
   alacak: { label: "Alacak", shortLabel: "ALACAK", color: "emerald", btnClass: "bg-emerald-600 hover:bg-emerald-700" },
@@ -85,7 +86,7 @@ export default function CariDetail() {
   };
 
   const remove = async (tx) => {
-    if (!window.confirm("Bu hareketi silmek istiyor musunuz?")) return;
+    if (!(await askConfirm("Bu hareketi silmek istiyor musunuz?"))) return;
     try {
       await api.delete(`/cariler/${id}/transactions/${tx.id}`);
       toast.success("Silindi");

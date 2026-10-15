@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Plus, Pencil, Trash2, TrendingUp, TrendingDown, Download } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
+import { askConfirm } from "@/components/ConfirmHost";
 
 /**
  * Shared component for Gelirler / Giderler - a list of items with description, amount, date.
@@ -83,7 +84,7 @@ export default function AmountList({ title, subtitle, endpoint, color = "emerald
   };
 
   const remove = async (id) => {
-    if (!window.confirm("Bu kaydı silmek istediğinize emin misiniz?")) return;
+    if (!(await askConfirm("Bu kaydı silmek istediğinize emin misiniz?"))) return;
     try {
       await api.delete(`/${endpoint}/${id}`);
       toast.success("Kayıt silindi");

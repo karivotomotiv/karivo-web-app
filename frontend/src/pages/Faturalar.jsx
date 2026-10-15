@@ -10,6 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableFoo
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Plus, Pencil, Trash2, FileText, Upload, Receipt, Download, Check, X } from "lucide-react";
 import { toast } from "sonner";
+import { askConfirm } from "@/components/ConfirmHost";
 
 export default function Faturalar() {
   const [items, setItems] = useState([]);
@@ -75,7 +76,7 @@ export default function Faturalar() {
   };
 
   const remove = async (id) => {
-    if (!window.confirm("Bu faturayı silmek istediğinize emin misiniz?")) return;
+    if (!(await askConfirm("Bu faturayı silmek istediğinize emin misiniz?"))) return;
     try {
       await api.delete(`/invoices/${id}`);
       toast.success("Fatura silindi");

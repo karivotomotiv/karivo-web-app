@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ShieldAlert, Ban, Undo2 } from "lucide-react";
 import { toast } from "sonner";
+import { askConfirm } from "@/components/ConfirmHost";
 
 const SuspiciousRow = ({ r, currentIp, onBlock }) => (
   <div className="rounded-lg bg-slate-50 px-3 py-2 space-y-1" data-testid={`suspicious-ip-${r.ip}`}>
@@ -41,12 +42,12 @@ export const IpSecurity = () => {
     const warn = r.recent_users.length
       ? `\n\nDİKKAT: Bu IP'den son 30 günde başarılı giriş yapan kullanıcılar: ${r.recent_users.join(", ")}.\nAynı internet bağlantısını kullanan herkes uygulamaya erişemeyecek.`
       : "";
-    if (!window.confirm(`${r.ip} adresi kalıcı olarak engellensin mi? Bu IP uygulamaya hiç erişemeyecek.${warn}`)) return;
+    if (!(await askConfirm(`${r.ip} adresi kalıcı olarak engellensin mi? Bu IP uygulamaya hiç erişemeyecek.${warn}`))) return;
     try { await api.post("/admin/security/blocked-ips", { ip: r.ip }); toast.success(`${r.ip} engellendi`); load(); }
     catch (e) { toast.error(extractError(e)); }
   };
   const unblock = async (ip) => {
-    if (!window.confirm(`${ip} adresinin engeli kaldırılsın mı?`)) return;
+    if (!(await askConfirm(`${ip} adresinin engeli kaldırılsın mı?`))) return;
     try { await api.delete(`/admin/security/blocked-ips/${encodeURIComponent(ip)}`); toast.success("Engel kaldırıldı"); load(); }
     catch (e) { toast.error(extractError(e)); }
   };
