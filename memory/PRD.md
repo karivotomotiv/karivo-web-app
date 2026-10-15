@@ -69,3 +69,4 @@ Tüm UI ve iletişim **Türkçe**.
 - 2026-06: İşlem Günlüğü Excel dışa aktarma — POST /api/activity-logs/export (ids|all|range), "Excel'e Aktar" butonu + silme onayında "Önce Excel olarak indir". Test: iteration_17 %100.
 - Cari Alacaklar: neden bulundu ("Borç" butonu = bizim borcumuz, dashboard sadece "Alacak" topluyor); kullanıcı "elleme" dedi.
 - 2026-06: Dashboard Cari Alacaklar net bakiyeye göre (alacak − ödeme − borç), eksi/0 bakiyeliler gizli. Test Oto 8.000 doğrulandı.
+- 2026-06: Cari detay butonları: 'Bize Borçlu' (alacak) / 'Biz Borçluyuz' (borç) / 'Ödeme Aldık' (ödeme).
